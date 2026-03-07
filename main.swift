@@ -177,18 +177,23 @@ func runTool(_ rawCmd: String) -> String {
 }
 
 /// Convert absolute paths in tool output to readable names.
-/// "/Applications/Claude Code.app/Contents/MacOS/Claude Code" → "Claude Code"
+/// "/Applications/Claude Code.app/Contents/MacOS/Claude Helper (Renderer) --flags" → "Claude Code"
 /// "/usr/local/bin/python3" → "python3"
 /// Leaves non-path tokens (numbers, flags, etc.) unchanged.
 func cleanToolOutput(_ text: String) -> String {
     var s = text
-    // Pass 1 — extract .app bundle name:  /dir/App Name.app/  →  App Name
-    if let re = try? NSRegularExpression(pattern: #"/[^/\n]*/([^/\n]+)\.app/"#) {
+    // Pass 1 — consume the ENTIRE .app bundle path including the internal binary + its
+    // space-separated words (stops at the first -flag so args aren't swallowed).
+    // Handles arbitrary parent depth (/Applications/ or /System/Library/CoreServices/)
+    // and multi-word binary names (Claude Helper (Renderer)).
+    // "/path/App Name.app/Contents/MacOS/Binary Name --flag" → "App Name"
+    if let re = try? NSRegularExpression(
+            pattern: #"(?:/[^/\n]+)*/([^/\n]+)\.app/[^\s]*(?: [^\s-][^\s]*)*"#) {
         s = re.stringByReplacingMatches(in: s,
-            range: NSRange(s.startIndex..., in: s), withTemplate: "$1 ")
+            range: NSRange(s.startIndex..., in: s), withTemplate: "$1")
     }
-    // Pass 2 — replace remaining absolute paths with basename: /a/b/foo → foo
-    // Requires at least two path components so bare "/24" (CIDR) is left alone.
+    // Pass 2 — replace remaining absolute paths (no spaces) with basename: /a/b/foo → foo
+    // Requires 2+ components so bare "/24" (CIDR notation) is untouched.
     if let re = try? NSRegularExpression(pattern: #"/(?:[^\s/]+/)+([^\s/]+)"#) {
         s = re.stringByReplacingMatches(in: s,
             range: NSRange(s.startIndex..., in: s), withTemplate: "$1")
@@ -313,13 +318,14 @@ func askLLMWithTools(query: String) -> String {
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
     If you need live system data to answer, output ONLY one line in this exact format:
     TOOL: <bash command>
-    Use SIMPLE commands — do NOT add extra awk/sort/grep/head pipes:
+    READ-ONLY commands only — never kill, stop, or modify anything:
       ps -Axo pid,args,%cpu,%mem -r | head -8
       df -h /
       vm_stat
       pmset -g batt
       ifconfig en0
       uptime
+    Do NOT add extra awk/sort/grep/xargs/kill pipes. One simple command only.
     If you do NOT need live data, answer directly in 1-3 sentences. Do not mix a TOOL line with text.
     <|im_end|>
     <|im_start|>user
