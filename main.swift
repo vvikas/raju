@@ -359,20 +359,6 @@ func askLLMWithTools(query: String) -> String {
     }
     guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
 
-    // Normalise ps commands: add sort flag if missing so output is always ordered by usage.
-    // Use -m (sort by RAM) for memory questions, -r (sort by CPU) for everything else.
-    if cmd.lowercased().hasPrefix("ps ") && !cmd.contains("-r") && !cmd.contains("-m") {
-        let memWords = ["ram", "memory", "mem", "rss"]
-        let sortFlag = memWords.contains(where: { query.lowercased().contains($0) }) ? "-m" : "-r"
-        // Insert before the first pipe, or append at the end
-        if let pipeRange = cmd.range(of: " |") {
-            cmd.insert(contentsOf: " \(sortFlag)", at: pipeRange.lowerBound)
-        } else {
-            cmd += " \(sortFlag)"
-        }
-        log("ℹ️ ps sort flag added (\(sortFlag)): \(cmd)")
-    }
-
     log("🔧 Tool call: \(cmd)")
     var toolOut = runTool(cmd)
     log("🔧 Tool output (\(toolOut.count)c): \(toolOut.prefix(200))")
@@ -386,8 +372,8 @@ func askLLMWithTools(query: String) -> String {
         // use canonical ps command for process queries.
         let fallback: String
         if cmd.lowercased().contains("ps ") {
-            let memWords = ["ram", "memory", "mem", "rss"]
-            let sortFlag = memWords.contains(where: { query.lowercased().contains($0) }) ? "-m" : "-r"
+            // Preserve the sort flag the LLM picked; fall back to -r if none present
+            let sortFlag = cmd.contains("-m") ? "-m" : "-r"
             fallback = "ps -Axo pid,args,%cpu,%mem \(sortFlag) | head -8"
         } else {
             fallback = cmd.components(separatedBy: "|").first?.trimmed ?? cmd
