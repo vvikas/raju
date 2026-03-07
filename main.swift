@@ -124,186 +124,46 @@ func shell(_ bin: String, _ args: [String]) -> String {
     return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 }
 
-// ── Static context (gathered once at launch, slow commands ok here) ───────────
+// ── Static context — one line, built once at launch ───────────────────────────
 var staticContext = ""
 
 func buildStaticContext() {
-    var ctx = "=== Machine Info ===\n"
-
-    // macOS + hostname
-    let os       = shell("/usr/bin/sw_vers", ["-productVersion"]).trimmed
-    let hostname = shell("/bin/hostname", []).trimmed
-    ctx += "macOS \(os) — \(hostname)\n"
-
-    // Mac model
-    let model    = shell("/usr/sbin/sysctl", ["-n", "hw.model"]).trimmed
-    ctx += "Model: \(model)\n"
-
-    // CPU
-    let cpuName  = shell("/usr/sbin/sysctl", ["-n", "machdep.cpu.brand_string"]).trimmed
-    let pCores   = shell("/usr/sbin/sysctl", ["-n", "hw.physicalcpu"]).trimmed
-    let lCores   = shell("/usr/sbin/sysctl", ["-n", "hw.logicalcpu"]).trimmed
-    ctx += "CPU: \(cpuName) (\(pCores) physical / \(lCores) logical cores)\n"
-
-    // Total RAM
-    let ramBytes = Int(shell("/usr/sbin/sysctl", ["-n", "hw.memsize"]).trimmed) ?? 0
-    ctx += "Total RAM: \(ramBytes / 1_073_741_824) GB\n"
-
-    // GPU (system_profiler — slow but only runs once)
-    let gpuOut = shell("/usr/sbin/system_profiler", ["SPDisplaysDataType"])
-    for line in gpuOut.components(separatedBy: "\n") {
-        if line.contains("Chipset Model:") {
-            ctx += "GPU: \(line.components(separatedBy: ":").last?.trimmed ?? "")\n"
-        }
-        if line.contains("VRAM") {
-            ctx += "VRAM: \(line.trimmed)\n"
-        }
-    }
-
-    // Disk model
-    let diskInfo = shell("/usr/sbin/diskutil", ["info", "/"])
-    for line in diskInfo.components(separatedBy: "\n") {
-        if line.contains("Device / Media Name:") || line.contains("Media Name:") {
-            if let val = line.components(separatedBy: ":").last?.trimmed, !val.isEmpty {
-                ctx += "SSD: \(val)\n"; break
-            }
-        }
-    }
-
-    staticContext = ctx
-    log("📋 Static context built:\n\(ctx)")
+    let os    = shell("/usr/bin/sw_vers", ["-productVersion"]).trimmed
+    let model = shell("/usr/sbin/sysctl", ["-n", "hw.model"]).trimmed
+    let cpu   = shell("/usr/sbin/sysctl", ["-n", "machdep.cpu.brand_string"]).trimmed
+    let ramGB = (Int(shell("/usr/sbin/sysctl", ["-n", "hw.memsize"]).trimmed) ?? 0) / 1_073_741_824
+    staticContext = "macOS \(os) on \(model) — \(cpu), \(ramGB)GB RAM"
+    log("📋 Machine: \(staticContext)")
 }
 
-// ── Dynamic context (gathered every query, fast commands only) ────────────────
-func gatherDynamicContext(query: String) -> String {
-    var ctx = staticContext + "\n=== Live Stats ===\n"
-
-    // CPU thermal + load
-    let thermal = shell("/usr/sbin/sysctl", ["-n", "machdep.xcpm.cpu_thermal_level"]).trimmed
-    ctx += "CPU thermal throttle: \(thermal)/100\n"
-    let uptime = shell("/usr/bin/uptime", []).trimmed
-    ctx += "Load: \(uptime)\n"
-
-    // RAM — active + wired + compressed = used
-    let vmstat = shell("/usr/bin/vm_stat", [])
-    var pages: [String: Int] = [:]
-    for line in vmstat.components(separatedBy: "\n") {
-        for key in ["Pages active", "Pages wired down", "Pages occupied by compressor",
-                    "Pages free", "Pages inactive"] {
-            if line.contains(key) {
-                let num = line.components(separatedBy: ":").last?
-                    .trimmed.replacingOccurrences(of: ".", with: "") ?? "0"
-                pages[key] = Int(num) ?? 0
-            }
-        }
-    }
-    let pg = 4096
-    let usedMB  = ((pages["Pages active"] ?? 0) + (pages["Pages wired down"] ?? 0)
-                  + (pages["Pages occupied by compressor"] ?? 0)) * pg / 1_048_576
-    let freeMB  = ((pages["Pages free"] ?? 0) + (pages["Pages inactive"] ?? 0)) * pg / 1_048_576
-    let compMB  = (pages["Pages occupied by compressor"] ?? 0) * pg / 1_048_576
-    ctx += "RAM: ~\(usedMB) MB used, ~\(freeMB) MB free, \(compMB) MB compressed\n"
-
-    // Swap
-    let swap = shell("/usr/sbin/sysctl", ["-n", "vm.swapusage"]).trimmed
-    ctx += "Swap: \(swap)\n"
-
-    // Disk free
-    let disk = shell("/bin/df", ["-h", "/"])
-    if let diskLine = disk.components(separatedBy: "\n").dropFirst().first {
-        let p = diskLine.split(separator: " ", omittingEmptySubsequences: true)
-        if p.count >= 4 { ctx += "Disk /: \(p[1]) total, \(p[2]) used, \(p[3]) free\n" }
+// ── Safe tool runner — LLM can request one bash command per turn ──────────────
+func runTool(_ rawCmd: String) -> String {
+    // Block destructive / network / privilege operations
+    let blocked = ["rm ", "sudo", "curl", "wget", "kill", "pkill", "mv ", "cp ",
+                   "launchctl", "chmod", "chown", "> ", ">>", "python", "ruby",
+                   "perl", "bash -c", "sh -c", "eval", "exec", "nc ", "osascript"]
+    let lower = rawCmd.lowercased()
+    for b in blocked where lower.contains(b) {
+        return "Error: '\(b)' not permitted"
     }
 
-    // Battery
-    let batt = shell("/usr/bin/pmset", ["-g", "batt"])
-    for line in batt.components(separatedBy: "\n") {
-        if line.contains("%") { ctx += "Battery: \(line.trimmed)\n" }
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/bin/bash")
+    task.arguments = ["-c", rawCmd]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError  = pipe
+    try? task.run()
+
+    // Hard 5-second timeout
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+        if task.isRunning { task.terminate() }
     }
+    task.waitUntilExit()
 
-    // Network — active interface + IP
-    let routeOut = shell("/sbin/route", ["get", "default"])
-    var iface = "en0"
-    for line in routeOut.components(separatedBy: "\n") {
-        if line.contains("interface:") {
-            iface = line.components(separatedBy: ":").last?.trimmed ?? "en0"
-        }
-    }
-    let ifOut = shell("/sbin/ifconfig", [iface])
-    for line in ifOut.components(separatedBy: "\n") {
-        if line.contains("inet ") && !line.contains("inet6") {
-            let p = line.split(separator: " ", omittingEmptySubsequences: true)
-            if p.count >= 2 { ctx += "Network (\(iface)): IP \(p[1])\n" }
-        }
-    }
-    // WiFi SSID
-    let wifi = shell("/usr/sbin/networksetup", ["-getairportnetwork", "en0"]).trimmed
-    if !wifi.isEmpty { ctx += "\(wifi)\n" }
-
-    // Top 5 processes by CPU (ps gives accurate real-time values, unlike top -l 1)
-    let psOut = shell("/bin/ps", ["-Axo", "pid,comm,%cpu,%mem", "-r"])
-    let psLines = psOut.components(separatedBy: "\n")
-        .dropFirst()                              // skip header
-        .filter { !$0.trimmed.isEmpty }
-        .prefix(5)
-        .map { $0.trimmed }
-    if !psLines.isEmpty {
-        ctx += "Top 5 processes by CPU (pid name %cpu %mem):\n"
-        psLines.forEach { ctx += "  \($0)\n" }
-    }
-
-    // Current time & date (useful for time-aware questions)
-    let now = DateFormatter()
-    now.dateFormat = "EEEE, MMM d yyyy, HH:mm:ss"
-    ctx += "Current time: \(now.string(from: Date()))\n"
-
-    // ── File / text search (Spotlight mdfind — instant) ──────────────────────
-    let q = query.lowercased()
-    let isFileSearch  = q.contains("find") || q.contains("where is") || q.contains("locate")
-    let isTextSearch  = q.contains("search") || q.contains("contains") || q.contains("look for")
-                     || q.contains("inside") || q.contains("in files")
-
-    if isFileSearch || isTextSearch {
-        // Extract search term: words after the trigger keyword
-        let triggers = ["find file", "find", "where is", "locate", "search for",
-                        "look for", "containing", "contains", "files with", "in files"]
-        var term = ""
-        for t in triggers {
-            if let r = q.range(of: t) {
-                term = String(q[r.upperBound...]).trimmed
-                    .components(separatedBy: " ").prefix(4).joined(separator: " ")
-                if !term.isEmpty { break }
-            }
-        }
-
-        if !term.isEmpty {
-            var results: [String] = []
-
-            if isFileSearch {
-                // Spotlight filename search — instant
-                let found = shell("/usr/bin/mdfind", ["-name", term, "-onlyin", HOME])
-                results = found.components(separatedBy: "\n")
-                    .filter { !$0.isEmpty && !$0.contains("/.") }
-                    .prefix(8).map { $0 }
-                ctx += results.isEmpty
-                    ? "No files named '\(term)' found.\n"
-                    : "Files named '\(term)':\n" + results.joined(separator: "\n") + "\n"
-            }
-
-            if isTextSearch {
-                // Spotlight full-text search — also instant
-                let found = shell("/usr/bin/mdfind", [term, "-onlyin", HOME])
-                let textResults = found.components(separatedBy: "\n")
-                    .filter { !$0.isEmpty && !$0.contains("/.") }
-                    .prefix(5).map { $0 }
-                ctx += textResults.isEmpty
-                    ? "No files containing '\(term)' found.\n"
-                    : "Files containing '\(term)':\n" + textResults.joined(separator: "\n") + "\n"
-            }
-        }
-    }
-
-    return ctx
+    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    // Cap at 20 lines so it fits in context
+    return out.components(separatedBy: "\n").prefix(20).joined(separator: "\n").trimmed
 }
 
 // ── String helper ─────────────────────────────────────────────────────────────
@@ -381,44 +241,25 @@ func transcribeViaHTTP() -> String {
     return result
 }
 
-// ── LLM via llama-server ──────────────────────────────────────────────────────
-func askLLM(query: String, context: String) -> String {
+// ── Raw llama-server call — send prompt, get completion ───────────────────────
+func callLlama(prompt: String, maxTokens: Int = 200) -> String {
     guard let url = URL(string: "\(LLAMA_URL)/completion") else { return "" }
-
-    let prompt = """
-    <|im_start|>system
-    You are Raju, a macOS system assistant. Rules:
-    - Answer in 2-3 sentences maximum.
-    - ONLY use facts from the system data provided below. Do NOT invent process names, numbers, or stats.
-    - If the answer is in the data, state it directly. If not, say you don't have that information.
-
-    \(context)
-    <|im_end|>
-    <|im_start|>user
-    \(query)
-    <|im_end|>
-    <|im_start|>assistant
-
-    """
-
     let body: [String: Any] = [
         "prompt": prompt,
-        "n_predict": 200,
+        "n_predict": maxTokens,
         "temperature": 0.7,
         "repeat_penalty": 1.1,
         "stop": ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
     ]
     guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return "" }
-
     var req = URLRequest(url: url, timeoutInterval: 120)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.httpBody = jsonData
-
     var result = ""
     let sem = DispatchSemaphore(value: 0)
     URLSession.shared.dataTask(with: req) { data, _, error in
-        if let error = error { log("⚠️ LLM HTTP error: \(error.localizedDescription)") }
+        if let error = error { log("⚠️ LLM error: \(error.localizedDescription)") }
         else if let data = data,
                 let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let content = json["content"] as? String {
@@ -428,6 +269,51 @@ func askLLM(query: String, context: String) -> String {
     }.resume()
     sem.wait()
     return result
+}
+
+// ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
+func askLLMWithTools(query: String) -> String {
+    let timeFmt = DateFormatter()
+    timeFmt.dateFormat = "EEEE, MMM d yyyy, HH:mm"
+    let now = timeFmt.string(from: Date())
+
+    // System prompt: minimal context + tool protocol
+    let sysmsg = """
+    You are Raju, a macOS voice assistant. Speak in 1-3 short sentences.
+    Machine: \(staticContext)
+    Time: \(now)
+
+    To get live system data, reply with ONLY this on a single line (nothing else):
+    TOOL: <bash command>
+
+    Allowed: ps, df, vm_stat, sysctl, pmset, ifconfig, uptime, networksetup, mdfind, date, sw_vers
+    Use a tool ONLY if the answer genuinely requires live data.
+    For general questions, answer directly — no tool needed.
+    """
+
+    // Turn 1 — LLM decides: answer directly OR request a tool
+    let p1 = "<|im_start|>system\n\(sysmsg)\n<|im_end|>\n" +
+             "<|im_start|>user\n\(query)\n<|im_end|>\n" +
+             "<|im_start|>assistant\n"
+    let r1 = callLlama(prompt: p1, maxTokens: 80).trimmed
+
+    guard r1.hasPrefix("TOOL:") else { return r1 }
+
+    // LLM wants a tool — extract command (first line only, for safety)
+    let cmd = String(r1.dropFirst(5))
+        .components(separatedBy: "\n").first?.trimmed ?? ""
+    guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
+
+    log("🔧 Tool call: \(cmd)")
+    let toolOut = runTool(cmd)
+    log("🔧 Tool output (\(toolOut.count)c): \(toolOut.prefix(200))")
+
+    // Turn 2 — feed result back, LLM gives final answer
+    let p2 = p1 +
+             "TOOL: \(cmd)\n<|im_end|>\n" +
+             "<|im_start|>user\nTool output:\n\(toolOut)\n<|im_end|>\n" +
+             "<|im_start|>assistant\n"
+    return callLlama(prompt: p2, maxTokens: 200).trimmed
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -823,16 +709,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.lastQuery = query
             self.setStatus("Heard: \"\(query.prefix(50))\"")
 
-            // Step 2: Dynamic context (fast)
+            // Step 2: LLM with tool-use (LLM requests a bash command if needed)
             self.state = .thinking
-            log("🔍 Gathering live system context…")
-            let ctx = gatherDynamicContext(query: query)
-            log("📋 Context ready (\(ctx.count) chars)")
-
-            // Step 3: LLM
-            log("🤔 Sending to llama-server…")
+            log("🤔 Asking LLM (tool-use mode)…")
             let t1    = Date()
-            let reply = askLLM(query: query, context: ctx)
+            let reply = askLLMWithTools(query: query)
             let lt    = String(format: "%.1f", Date().timeIntervalSince(t1))
             self.lastReply = reply.isEmpty ? "Sorry, I didn't get that." : reply
             log("💬 LLM reply in \(lt)s → \"\(self.lastReply)\"")
