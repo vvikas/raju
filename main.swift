@@ -617,10 +617,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showLog() {
-        // Open a Terminal window running `tail -f` — live UTF-8 streaming, emoji work correctly.
-        // TextEdit is static (no live updates). Console.app is live but garbles multi-byte chars.
-        let script = "tell application \"Terminal\" to do script \"tail -f '\(LOG_FILE)'\" activate"
-        NSAppleScript(source: script)?.executeAndReturnError(nil)
+        // Write a tiny .command script and open it — macOS runs .command files in
+        // Terminal automatically, no Automation entitlement required.
+        // This gives live UTF-8 streaming (tail -f) with correct emoji.
+        let cmdFile = "/tmp/raju_log_view.command"
+        let script = """
+        #!/bin/bash
+        clear
+        echo '── Raju live log (Ctrl+C to close) ──────────────'
+        echo ''
+        tail -f '\(LOG_FILE)'
+        """
+        try? script.write(toFile: cmdFile, atomically: true, encoding: .utf8)
+        let attrs: [FileAttributeKey: Any] = [.posixPermissions: NSNumber(value: 0o755)]
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: cmdFile)
+        NSWorkspace.shared.open(URL(fileURLWithPath: cmdFile))
     }
 
     // ── Server toggle (stop / start from menu) ─────────────────────────────────
