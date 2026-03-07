@@ -240,18 +240,16 @@ func gatherDynamicContext(query: String) -> String {
     let wifi = shell("/usr/sbin/networksetup", ["-getairportnetwork", "en0"]).trimmed
     if !wifi.isEmpty { ctx += "\(wifi)\n" }
 
-    // Top 5 processes by CPU
-    let topOut = shell("/usr/bin/top", ["-l", "1", "-n", "5", "-o", "cpu",
-                                        "-stats", "pid,command,cpu,mem"])
-    var topLines: [String] = []
-    var pastHeader = false
-    for line in topOut.components(separatedBy: "\n") {
-        if line.hasPrefix("PID") { pastHeader = true; continue }
-        if pastHeader && !line.trimmed.isEmpty { topLines.append(line.trimmed) }
-        if topLines.count >= 5 { break }
-    }
-    if !topLines.isEmpty {
-        ctx += "Top processes (CPU): " + topLines.joined(separator: " | ") + "\n"
+    // Top 5 processes by CPU (ps gives accurate real-time values, unlike top -l 1)
+    let psOut = shell("/bin/ps", ["-Axo", "pid,comm,%cpu,%mem", "-r"])
+    let psLines = psOut.components(separatedBy: "\n")
+        .dropFirst()                              // skip header
+        .filter { !$0.trimmed.isEmpty }
+        .prefix(5)
+        .map { $0.trimmed }
+    if !psLines.isEmpty {
+        ctx += "Top 5 processes by CPU (pid name %cpu %mem):\n"
+        psLines.forEach { ctx += "  \($0)\n" }
     }
 
     // Current time & date (useful for time-aware questions)
@@ -389,7 +387,10 @@ func askLLM(query: String, context: String) -> String {
 
     let prompt = """
     <|im_start|>system
-    You are Raju, a concise macOS system assistant. Answer in 2-3 short sentences. Be direct and factual. Use the system state below to answer accurately. Never make up information.
+    You are Raju, a macOS system assistant. Rules:
+    - Answer in 2-3 sentences maximum.
+    - ONLY use facts from the system data provided below. Do NOT invent process names, numbers, or stats.
+    - If the answer is in the data, state it directly. If not, say you don't have that information.
 
     \(context)
     <|im_end|>
@@ -446,14 +447,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var currentVoiceIndex = 0
     var voiceMenuItems: [NSMenuItem] = []
 
-    let itemLlama   = NSMenuItem(title: "  ⏳ LLM loading…",    action: nil, keyEquivalent: "")
-    let itemWhisper = NSMenuItem(title: "  ⏳ Whisper loading…", action: nil, keyEquivalent: "")
-    let itemModel   = NSMenuItem(title: "  🧠 Model",            action: nil, keyEquivalent: "")
-    let itemVoice   = NSMenuItem(title: "  🗣️ Voice",            action: nil, keyEquivalent: "")
-    let itemHint    = NSMenuItem(title: "  Hold to speak",       action: nil, keyEquivalent: "")
-    let itemStatus  = NSMenuItem(title: "",                      action: nil, keyEquivalent: "")
-    let itemQuery   = NSMenuItem(title: "",                      action: nil, keyEquivalent: "")
-    let itemReply   = NSMenuItem(title: "",                      action: nil, keyEquivalent: "")
+    let itemLlama        = NSMenuItem(title: "  ⏳ LLM loading…",    action: nil,                                    keyEquivalent: "")
+    let itemWhisper      = NSMenuItem(title: "  ⏳ Whisper loading…", action: nil,                                    keyEquivalent: "")
+    let itemLlamaToggle  = NSMenuItem(title: "  ⏹ Stop LLM",         action: #selector(toggleLlama),                 keyEquivalent: "")
+    let itemWhisperToggle = NSMenuItem(title: "  ⏹ Stop Whisper",    action: #selector(toggleWhisper),               keyEquivalent: "")
+    let itemModel        = NSMenuItem(title: "  🧠 Model",            action: nil,                                    keyEquivalent: "")
+    let itemVoice        = NSMenuItem(title: "  🗣️ Voice",            action: nil,                                    keyEquivalent: "")
+    let itemHint         = NSMenuItem(title: "  Hold to speak",       action: nil,                                    keyEquivalent: "")
+    let itemStatus       = NSMenuItem(title: "",                      action: nil,                                    keyEquivalent: "")
+    let itemQuery        = NSMenuItem(title: "",                      action: nil,                                    keyEquivalent: "")
+    let itemReply        = NSMenuItem(title: "",                      action: nil,                                    keyEquivalent: "")
+    let itemLaunchAtLogin = NSMenuItem(title: "  Launch at Login",    action: #selector(toggleLaunchAtLogin),         keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -491,10 +495,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         itemVoice.title   = "  🗣️ \(VOICES[0].name)"
         itemVoice.submenu = voiceSubmenu
 
+        itemLlamaToggle.target   = self
+        itemWhisperToggle.target = self
+        itemLaunchAtLogin.target = self
+        itemLaunchAtLogin.state  = isLaunchAtLoginEnabled() ? .on : .off
+
         menu = NSMenu()
         menu.addItem(NSMenuItem(title: "── Raju ─────────────────", action: nil, keyEquivalent: ""))
         menu.addItem(itemLlama)
+        menu.addItem(itemLlamaToggle)
         menu.addItem(itemWhisper)
+        menu.addItem(itemWhisperToggle)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(itemModel)
         menu.addItem(itemVoice)
         menu.addItem(itemHint)
@@ -504,6 +516,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(itemReply)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "  📄 Show Log", action: #selector(showLog), keyEquivalent: "l"))
+        menu.addItem(itemLaunchAtLogin)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
@@ -548,7 +561,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Thread.sleep(forTimeInterval: 2); secs += 2
             if isLlamaReady() {
                 log("⚡ llama-server ready after \(secs)s — \(model.name)")
-                DispatchQueue.main.async { self.itemLlama.title = "  ⚡ LLM ready (\(model.name))" }
+                DispatchQueue.main.async {
+                    self.itemLlama.title       = "  ⚡ LLM ready (\(model.name))"
+                    self.itemLlamaToggle.title = "  ⏹ Stop LLM"
+                }
                 return
             }
             if secs % 20 == 0 { log("⏳ \(model.name) still loading… (\(secs)s)") }
@@ -577,7 +593,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             Thread.sleep(forTimeInterval: 2); secs += 2
             if isWhisperReady() {
                 log("⚡ whisper-server ready after \(secs)s")
-                DispatchQueue.main.async { self.itemWhisper.title = "  ⚡ Whisper ready (small)" }
+                DispatchQueue.main.async {
+                    self.itemWhisper.title       = "  ⚡ Whisper ready (small)"
+                    self.itemWhisperToggle.title = "  ⏹ Stop Whisper"
+                }
                 return
             }
             if secs % 10 == 0 { log("⏳ Whisper still loading… (\(secs)s)") }
@@ -612,6 +631,79 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showLog() { NSWorkspace.shared.open(URL(fileURLWithPath: LOG_FILE)) }
+
+    // ── Server toggle (stop / start from menu) ─────────────────────────────────
+    @objc func toggleLlama() {
+        if isLlamaReady() {
+            log("⏹ Stopping llama-server…")
+            llamaProcess?.terminate(); llamaProcess = nil
+            DispatchQueue.main.async {
+                self.itemLlama.title       = "  ⭕ LLM stopped"
+                self.itemLlamaToggle.title = "  ▶ Start LLM"
+            }
+        } else {
+            DispatchQueue.main.async { self.itemLlamaToggle.title = "  ⏳ Starting…" }
+            DispatchQueue.global(qos: .background).async { self.startLlamaServer() }
+            DispatchQueue.main.async { self.itemLlamaToggle.title = "  ⏹ Stop LLM" }
+        }
+    }
+
+    @objc func toggleWhisper() {
+        if isWhisperReady() {
+            log("⏹ Stopping whisper-server…")
+            whisperProcess?.terminate(); whisperProcess = nil
+            DispatchQueue.main.async {
+                self.itemWhisper.title       = "  ⭕ Whisper stopped"
+                self.itemWhisperToggle.title = "  ▶ Start Whisper"
+            }
+        } else {
+            DispatchQueue.main.async { self.itemWhisperToggle.title = "  ⏳ Starting…" }
+            DispatchQueue.global(qos: .background).async { self.startWhisperServer() }
+            DispatchQueue.main.async { self.itemWhisperToggle.title = "  ⏹ Stop Whisper" }
+        }
+    }
+
+    // ── Launch at Login ────────────────────────────────────────────────────────
+    func launchAgentPath() -> String {
+        "\(HOME)/Library/LaunchAgents/com.raju.app.plist"
+    }
+
+    func isLaunchAtLoginEnabled() -> Bool {
+        FileManager.default.fileExists(atPath: launchAgentPath())
+    }
+
+    @objc func toggleLaunchAtLogin() {
+        let path = launchAgentPath()
+        if isLaunchAtLoginEnabled() {
+            shell("/bin/launchctl", ["unload", path])
+            try? FileManager.default.removeItem(atPath: path)
+            itemLaunchAtLogin.state = .off
+            log("🚫 Removed from launch at login")
+        } else {
+            let execPath = Bundle.main.executablePath
+                ?? ProcessInfo.processInfo.arguments[0]
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key><string>com.raju.app</string>
+                <key>ProgramArguments</key>
+                <array><string>\(execPath)</string></array>
+                <key>RunAtLoad</key><true/>
+                <key>KeepAlive</key><false/>
+            </dict>
+            </plist>
+            """
+            try? FileManager.default.createDirectory(
+                atPath: "\(HOME)/Library/LaunchAgents",
+                withIntermediateDirectories: true)
+            try? xml.write(toFile: path, atomically: true, encoding: .utf8)
+            shell("/bin/launchctl", ["load", path])
+            itemLaunchAtLogin.state = .on
+            log("✅ Added to launch at login")
+        }
+    }
 
     @objc func selectModel(_ sender: NSMenuItem) {
         let idx = sender.tag
