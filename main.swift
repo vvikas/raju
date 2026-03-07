@@ -163,8 +163,30 @@ func runTool(_ rawCmd: String) -> String {
     task.waitUntilExit()
 
     let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    // Clean up paths → readable names (e.g. "Claude Code" not "/Applications/Cl…")
+    let cleaned = cleanToolOutput(out)
     // Cap at 20 lines so it fits in context
-    return out.components(separatedBy: "\n").prefix(20).joined(separator: "\n").trimmed
+    return cleaned.components(separatedBy: "\n").prefix(20).joined(separator: "\n").trimmed
+}
+
+/// Convert absolute paths in tool output to readable names.
+/// "/Applications/Claude Code.app/Contents/MacOS/Claude Code" → "Claude Code"
+/// "/usr/local/bin/python3" → "python3"
+/// Leaves non-path tokens (numbers, flags, etc.) unchanged.
+func cleanToolOutput(_ text: String) -> String {
+    var s = text
+    // Pass 1 — extract .app bundle name:  /dir/App Name.app/  →  App Name
+    if let re = try? NSRegularExpression(pattern: #"/[^/\n]*/([^/\n]+)\.app/"#) {
+        s = re.stringByReplacingMatches(in: s,
+            range: NSRange(s.startIndex..., in: s), withTemplate: "$1 ")
+    }
+    // Pass 2 — replace remaining absolute paths with basename: /a/b/foo → foo
+    // Requires at least two path components so bare "/24" (CIDR) is left alone.
+    if let re = try? NSRegularExpression(pattern: #"/(?:[^\s/]+/)+([^\s/]+)"#) {
+        s = re.stringByReplacingMatches(in: s,
+            range: NSRange(s.startIndex..., in: s), withTemplate: "$1")
+    }
+    return s
 }
 
 // ── String helper ─────────────────────────────────────────────────────────────
@@ -284,7 +306,7 @@ func askLLMWithTools(query: String) -> String {
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
     If you need live system data to answer, output ONLY one line in this exact format:
     TOOL: <bash command>
-    Use commands like: ps -Axo comm,%cpu,%mem -r | head -8 , df -h / , vm_stat , pmset -g batt , ifconfig en0 , uptime
+    Use commands like: ps -Axo pid,args,%cpu,%mem -r | head -8 , df -h / , vm_stat , pmset -g batt , ifconfig en0 , uptime
     If you do NOT need live data, answer directly in 1-3 sentences. Do not mix a TOOL line with text.
     <|im_end|>
     <|im_start|>user
@@ -626,12 +648,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         modelMenuItems[idx].state = .on
         itemModel.title = "  🧠 \(model.name)"
 
-        log("🔄 Switching to \(model.name) — restarting llama-server…")
+        log("🔄 Switching to \(model.name) — stopping old server…")
         DispatchQueue.main.async { self.itemLlama.title = "  ⏳ Loading \(model.name)…" }
 
         llamaProcess?.terminate()
         llamaProcess = nil
-        DispatchQueue.global(qos: .background).async { self.startLlamaServer() }
+
+        DispatchQueue.global(qos: .background).async {
+            // Wait for the old server to actually stop responding before starting the new one.
+            // terminate() sends SIGTERM but the process takes a moment to die.
+            var waited = 0
+            while isLlamaReady() && waited < 15 {
+                Thread.sleep(forTimeInterval: 1)
+                waited += 1
+            }
+            if waited > 0 { log("⏳ Old server stopped after \(waited)s") }
+            self.startLlamaServer()
+        }
     }
 
     @objc func selectVoice(_ sender: NSMenuItem) {
