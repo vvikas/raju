@@ -654,19 +654,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(URL(fileURLWithPath: cmdFile))
     }
 
+    // ── pkill helper — used by toggle functions to kill servers by name ───────
+    // (bypasses runTool's blocklist since this is direct Swift code, not an LLM tool call)
+    func pkillByName(_ pattern: String) {
+        let k = Process()
+        k.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        k.arguments = ["-f", pattern]
+        k.standardOutput = Pipe(); k.standardError = Pipe()
+        try? k.run(); k.waitUntilExit()
+    }
+
     // ── Server toggle (stop / start from menu) ─────────────────────────────────
     @objc func toggleLlama() {
         if isLlamaReady() {
+            // Stop: terminate our Process handle (if we launched it) THEN pkill by
+            // name so pre-existing servers (llamaProcess == nil) are also killed.
             log("⏹ Stopping llama-server…")
             llamaProcess?.terminate(); llamaProcess = nil
-            DispatchQueue.main.async {
-                self.itemLlama.title       = "  ⭕ LLM stopped"
-                self.itemLlamaToggle.title = "  ▶ Start LLM"
+            pkillByName("llama-server")
+            // Poll on background thread — update UI only after server is actually down
+            DispatchQueue.global(qos: .background).async {
+                var waited = 0
+                while isLlamaReady() && waited < 10 {
+                    Thread.sleep(forTimeInterval: 1); waited += 1
+                }
+                let still = isLlamaReady()
+                log(still ? "⚠️ llama-server still running after 10s" : "⭕ llama-server stopped")
+                DispatchQueue.main.async {
+                    self.itemLlama.title       = still ? "  ⚠️ LLM won't stop" : "  ⭕ LLM stopped"
+                    self.itemLlamaToggle.title = still ? "  ⏹ Stop LLM"        : "  ▶ Start LLM"
+                }
             }
         } else {
-            DispatchQueue.main.async { self.itemLlamaToggle.title = "  ⏳ Starting…" }
+            // Start: show "Starting…" immediately, then let startLlamaServer()
+            // update itemLlama + itemLlamaToggle when the server is actually ready.
+            // (Do NOT set toggle title to "⏹ Stop LLM" here — that races with the background task.)
+            DispatchQueue.main.async {
+                self.itemLlama.title       = "  ⏳ LLM starting…"
+                self.itemLlamaToggle.title = "  ⏳ Starting…"
+            }
             DispatchQueue.global(qos: .background).async { self.startLlamaServer() }
-            DispatchQueue.main.async { self.itemLlamaToggle.title = "  ⏹ Stop LLM" }
         }
     }
 
@@ -674,14 +701,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if isWhisperReady() {
             log("⏹ Stopping whisper-server…")
             whisperProcess?.terminate(); whisperProcess = nil
-            DispatchQueue.main.async {
-                self.itemWhisper.title       = "  ⭕ Whisper stopped"
-                self.itemWhisperToggle.title = "  ▶ Start Whisper"
+            pkillByName("whisper-server")
+            DispatchQueue.global(qos: .background).async {
+                var waited = 0
+                while isWhisperReady() && waited < 10 {
+                    Thread.sleep(forTimeInterval: 1); waited += 1
+                }
+                let still = isWhisperReady()
+                log(still ? "⚠️ whisper-server still running after 10s" : "⭕ whisper-server stopped")
+                DispatchQueue.main.async {
+                    self.itemWhisper.title       = still ? "  ⚠️ Whisper won't stop" : "  ⭕ Whisper stopped"
+                    self.itemWhisperToggle.title = still ? "  ⏹ Stop Whisper"        : "  ▶ Start Whisper"
+                }
             }
         } else {
-            DispatchQueue.main.async { self.itemWhisperToggle.title = "  ⏳ Starting…" }
+            DispatchQueue.main.async {
+                self.itemWhisper.title       = "  ⏳ Whisper starting…"
+                self.itemWhisperToggle.title = "  ⏳ Starting…"
+            }
             DispatchQueue.global(qos: .background).async { self.startWhisperServer() }
-            DispatchQueue.main.async { self.itemWhisperToggle.title = "  ⏹ Stop Whisper" }
         }
     }
 
@@ -746,10 +784,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         llamaProcess?.terminate()
         llamaProcess = nil
+        pkillByName("llama-server")   // also kills pre-existing servers we didn't launch
 
         DispatchQueue.global(qos: .background).async {
             // Wait for the old server to actually stop responding before starting the new one.
-            // terminate() sends SIGTERM but the process takes a moment to die.
             var waited = 0
             while isLlamaReady() && waited < 15 {
                 Thread.sleep(forTimeInterval: 1)
