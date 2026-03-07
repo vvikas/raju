@@ -1,5 +1,6 @@
 import Cocoa
 import Foundation
+import AVFoundation
 
 // ── Paths & ports ─────────────────────────────────────────────────────────────
 let HOME           = FileManager.default.homeDirectoryForCurrentUser.path
@@ -277,43 +278,58 @@ func askLLMWithTools(query: String) -> String {
     timeFmt.dateFormat = "EEEE, MMM d yyyy, HH:mm"
     let now = timeFmt.string(from: Date())
 
-    // System prompt: minimal context + tool protocol
-    let sysmsg = """
-    You are Raju, a macOS voice assistant. Speak in 1-3 short sentences.
-    Machine: \(staticContext)
-    Time: \(now)
-
-    To get live system data, reply with ONLY this on a single line (nothing else):
+    // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL: line
+    let p1 = """
+    <|im_start|>system
+    You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
+    If you need live system data to answer, output ONLY one line in this exact format:
     TOOL: <bash command>
+    Use commands like: ps -Axo comm,%cpu,%mem -r | head -8 , df -h / , vm_stat , pmset -g batt , ifconfig en0 , uptime
+    If you do NOT need live data, answer directly in 1-3 sentences. Do not mix a TOOL line with text.
+    <|im_end|>
+    <|im_start|>user
+    \(query)
+    <|im_end|>
+    <|im_start|>assistant
 
-    Allowed: ps, df, vm_stat, sysctl, pmset, ifconfig, uptime, networksetup, mdfind, date, sw_vers
-    Use a tool ONLY if the answer genuinely requires live data.
-    For general questions, answer directly — no tool needed.
     """
+    let r1 = callLlama(prompt: p1, maxTokens: 60).trimmed
 
-    // Turn 1 — LLM decides: answer directly OR request a tool
-    let p1 = "<|im_start|>system\n\(sysmsg)\n<|im_end|>\n" +
-             "<|im_start|>user\n\(query)\n<|im_end|>\n" +
-             "<|im_start|>assistant\n"
-    let r1 = callLlama(prompt: p1, maxTokens: 80).trimmed
+    // Check only the first line — ignore any extra text the model may have generated
+    let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
+    guard firstLine.hasPrefix("TOOL:") else { return r1 }
 
-    guard r1.hasPrefix("TOOL:") else { return r1 }
-
-    // LLM wants a tool — extract command (first line only, for safety)
-    let cmd = String(r1.dropFirst(5))
-        .components(separatedBy: "\n").first?.trimmed ?? ""
+    let cmd = String(firstLine.dropFirst(5)).trimmed
     guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
 
     log("🔧 Tool call: \(cmd)")
     let toolOut = runTool(cmd)
     log("🔧 Tool output (\(toolOut.count)c): \(toolOut.prefix(200))")
 
-    // Turn 2 — feed result back, LLM gives final answer
-    let p2 = p1 +
-             "TOOL: \(cmd)\n<|im_end|>\n" +
-             "<|im_start|>user\nTool output:\n\(toolOut)\n<|im_end|>\n" +
-             "<|im_start|>assistant\n"
-    return callLlama(prompt: p2, maxTokens: 200).trimmed
+    // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
+    // Just give them the data and ask for a spoken answer
+    let p2 = """
+    <|im_start|>system
+    You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.
+    Use ONLY the data below — do not invent numbers or process names.
+    <|im_end|>
+    <|im_start|>user
+    Live system data (from `\(cmd)`):
+    \(toolOut)
+
+    Question: \(query)
+    <|im_end|>
+    <|im_start|>assistant
+
+    """
+    let r2 = callLlama(prompt: p2, maxTokens: 150).trimmed
+
+    // Safety net: if model still emits TOOL: drop that line and return the rest
+    if r2.hasPrefix("TOOL:") {
+        let rest = r2.components(separatedBy: "\n").dropFirst().joined(separator: "\n").trimmed
+        return rest.isEmpty ? "I ran \(cmd) but couldn't summarise the output." : rest
+    }
+    return r2
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -410,6 +426,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         refreshUI()
 
         log("── Raju started ──────────────────────────────")
+
+        // Request microphone permission immediately — triggers macOS prompt if not yet granted
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            log(granted ? "🎤 Microphone access granted" : "⚠️ Microphone access DENIED — recording will be silent. Grant access in System Preferences → Privacy → Microphone.")
+        }
 
         // Build static context + start servers in parallel
         DispatchQueue.global(qos: .background).async { buildStaticContext() }
@@ -701,8 +722,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let query = transcribeViaHTTP()
             let wt    = String(format: "%.1f", Date().timeIntervalSince(t0))
 
-            guard !query.isEmpty else {
-                log("⚠️ Whisper returned empty — nothing heard (took \(wt)s)")
+            let isBlank = query.isEmpty || query == "[BLANK_AUDIO]"
+                       || query.lowercased().contains("blank_audio")
+            guard !isBlank else {
+                log("⚠️ Blank audio — nothing heard (took \(wt)s). Check mic permission in System Preferences.")
                 self.state = .idle; return
             }
             log("⏳ Whisper done in \(wt)s → \"\(query)\"")
