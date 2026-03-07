@@ -319,7 +319,8 @@ func askLLMWithTools(query: String) -> String {
     If you need live system data to answer, output ONLY one line in this exact format:
     TOOL: <bash command>
     READ-ONLY commands only — never kill, stop, or modify anything:
-      ps -Axo pid,args,%cpu,%mem -r | head -8
+      ps -Axo pid,args,%cpu,%mem -r | head -8   (CPU questions — -r sorts by CPU)
+      ps -Axo pid,args,%cpu,%mem -m | head -8   (RAM/memory questions — -m sorts by RAM)
       df -h /
       vm_stat
       pmset -g batt
@@ -349,7 +350,7 @@ func askLLMWithTools(query: String) -> String {
     guard firstLine.hasPrefix("TOOL:") || looksLikeShell else { return r1 }
 
     // Strip TOOL: prefix if present; otherwise the line itself is the command
-    let cmd: String
+    var cmd: String
     if firstLine.hasPrefix("TOOL:") {
         cmd = String(firstLine.dropFirst(5)).trimmed
     } else {
@@ -357,6 +358,20 @@ func askLLMWithTools(query: String) -> String {
         cmd = firstLine
     }
     guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
+
+    // Normalise ps commands: add sort flag if missing so output is always ordered by usage.
+    // Use -m (sort by RAM) for memory questions, -r (sort by CPU) for everything else.
+    if cmd.lowercased().hasPrefix("ps ") && !cmd.contains("-r") && !cmd.contains("-m") {
+        let memWords = ["ram", "memory", "mem", "rss"]
+        let sortFlag = memWords.contains(where: { query.lowercased().contains($0) }) ? "-m" : "-r"
+        // Insert before the first pipe, or append at the end
+        if let pipeRange = cmd.range(of: " |") {
+            cmd.insert(contentsOf: " \(sortFlag)", at: pipeRange.lowerBound)
+        } else {
+            cmd += " \(sortFlag)"
+        }
+        log("ℹ️ ps sort flag added (\(sortFlag)): \(cmd)")
+    }
 
     log("🔧 Tool call: \(cmd)")
     var toolOut = runTool(cmd)
@@ -371,7 +386,9 @@ func askLLMWithTools(query: String) -> String {
         // use canonical ps command for process queries.
         let fallback: String
         if cmd.lowercased().contains("ps ") {
-            fallback = "ps -Axo pid,args,%cpu,%mem -r | head -8"
+            let memWords = ["ram", "memory", "mem", "rss"]
+            let sortFlag = memWords.contains(where: { query.lowercased().contains($0) }) ? "-m" : "-r"
+            fallback = "ps -Axo pid,args,%cpu,%mem \(sortFlag) | head -8"
         } else {
             fallback = cmd.components(separatedBy: "|").first?.trimmed ?? cmd
         }
