@@ -617,15 +617,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showLog() {
-        // Open in TextEdit — it auto-detects UTF-8, so emoji display correctly.
-        // Console.app (the macOS default for .log) renders multi-byte chars as Latin-1 garbage.
-        let url = URL(fileURLWithPath: LOG_FILE)
-        if let textEdit = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") {
-            NSWorkspace.shared.open([url], withApplicationAt: textEdit,
-                                    configuration: NSWorkspace.OpenConfiguration())
-        } else {
-            NSWorkspace.shared.open(url)
-        }
+        // Open a Terminal window running `tail -f` — live UTF-8 streaming, emoji work correctly.
+        // TextEdit is static (no live updates). Console.app is live but garbles multi-byte chars.
+        let script = "tell application \"Terminal\" to do script \"tail -f '\(LOG_FILE)'\" activate"
+        NSAppleScript(source: script)?.executeAndReturnError(nil)
     }
 
     // ── Server toggle (stop / start from menu) ─────────────────────────────────
