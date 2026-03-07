@@ -9,11 +9,12 @@ let LLAMA_SERVER   = "\(HOME)/local_llms/llama.cpp/build/bin/llama-server"
 let LLAMA_MODEL    = "\(HOME)/local_llms/llama.cpp/models/qwen2-1.5b.gguf"
 let REC_BIN        = "/usr/local/bin/rec"
 let PYTHON3_BIN    = "/usr/local/bin/python3"
-let PIPER_MODEL    = "\(HOME)/.raju/voices/en_US-lessac-medium.onnx"
 let PIPER_OUT      = "/tmp/raju_tts.wav"
 let SAY_BIN        = "/usr/bin/say"
 let AUDIO_FILE     = "/tmp/raju_input.wav"
 let LOG_FILE       = "\(HOME)/Raju/raju.log"
+let VOICES_DIR     = "\(HOME)/.raju/voices"
+
 // ── Available LLM models ──────────────────────────────────────────────────────
 struct LLMModel {
     let name: String
@@ -25,6 +26,26 @@ let MODELS: [LLMModel] = [
     LLMModel(name: "Qwen2 1.5B",          file: "qwen2-1.5b.gguf"),
     LLMModel(name: "DeepSeek-Coder 1.3B", file: "deepseek-coder-1.3b.gguf"),
     LLMModel(name: "TinyLlama 1.1B",      file: "tinyllama.gguf"),
+]
+
+// ── Available Piper voices ────────────────────────────────────────────────────
+struct PiperVoice {
+    let name: String
+    let file: String      // e.g. "en_US-lessac-medium.onnx"
+    let urlPath: String   // HuggingFace path under piper-voices/main/
+    var path: String    { "\(VOICES_DIR)/\(file)" }
+    var onnxURL: String { "https://huggingface.co/rhasspy/piper-voices/resolve/main/\(urlPath)/\(file)" }
+    var jsonURL: String { "\(onnxURL).json" }
+    var isDownloaded: Bool { FileManager.default.fileExists(atPath: path) }
+}
+
+let VOICES: [PiperVoice] = [
+    PiperVoice(name: "Lessac (US Female)",   file: "en_US-lessac-medium.onnx",  urlPath: "en/en_US/lessac/medium"),
+    PiperVoice(name: "Ryan (US Male)",       file: "en_US-ryan-medium.onnx",    urlPath: "en/en_US/ryan/medium"),
+    PiperVoice(name: "Amy (US Female)",      file: "en_US-amy-medium.onnx",     urlPath: "en/en_US/amy/medium"),
+    PiperVoice(name: "Joe (US Male)",        file: "en_US-joe-medium.onnx",     urlPath: "en/en_US/joe/medium"),
+    PiperVoice(name: "Jenny (GB Female)",    file: "en_GB-jenny-medium.onnx",   urlPath: "en/en_GB/jenny/medium"),
+    PiperVoice(name: "Alan (GB Male)",       file: "en_GB-alan-medium.onnx",    urlPath: "en/en_GB/alan/medium"),
 ]
 
 let LLAMA_PORT     = 8080
@@ -69,12 +90,12 @@ enum RajuState {
 }
 
 // ── TTS — piper (python3 -m piper) if model exists, fallback to say ──────────
-func speak(_ text: String) {
+func speak(_ text: String, modelPath: String) {
     let fm = FileManager.default
-    if fm.fileExists(atPath: PIPER_MODEL) {
+    if fm.fileExists(atPath: modelPath) {
         let piper = Process()
         piper.executableURL = URL(fileURLWithPath: PYTHON3_BIN)
-        piper.arguments = ["-m", "piper", "--model", PIPER_MODEL, "--output_file", PIPER_OUT]
+        piper.arguments = ["-m", "piper", "--model", modelPath, "--output_file", PIPER_OUT]
         let inputPipe = Pipe()
         piper.standardInput  = inputPipe
         piper.standardOutput = Pipe()
@@ -422,10 +443,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     var currentModelIndex = 0
     var modelMenuItems: [NSMenuItem] = []
+    var currentVoiceIndex = 0
+    var voiceMenuItems: [NSMenuItem] = []
 
     let itemLlama   = NSMenuItem(title: "  ⏳ LLM loading…",    action: nil, keyEquivalent: "")
     let itemWhisper = NSMenuItem(title: "  ⏳ Whisper loading…", action: nil, keyEquivalent: "")
     let itemModel   = NSMenuItem(title: "  🧠 Model",            action: nil, keyEquivalent: "")
+    let itemVoice   = NSMenuItem(title: "  🗣️ Voice",            action: nil, keyEquivalent: "")
     let itemHint    = NSMenuItem(title: "  Hold to speak",       action: nil, keyEquivalent: "")
     let itemStatus  = NSMenuItem(title: "",                      action: nil, keyEquivalent: "")
     let itemQuery   = NSMenuItem(title: "",                      action: nil, keyEquivalent: "")
@@ -453,11 +477,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         itemModel.title   = "  🧠 \(MODELS[0].name)"
         itemModel.submenu = modelSubmenu
 
+        // Build voice submenu
+        let voiceSubmenu = NSMenu()
+        for (i, voice) in VOICES.enumerated() {
+            let item = NSMenuItem(title: voice.name, action: #selector(selectVoice(_:)), keyEquivalent: "")
+            item.tag    = i
+            item.target = self
+            item.state  = (i == 0) ? .on : .off
+            if !voice.isDownloaded && i != 0 { item.title = voice.name + "  ↓" }
+            voiceSubmenu.addItem(item)
+            voiceMenuItems.append(item)
+        }
+        itemVoice.title   = "  🗣️ \(VOICES[0].name)"
+        itemVoice.submenu = voiceSubmenu
+
         menu = NSMenu()
         menu.addItem(NSMenuItem(title: "── Raju ─────────────────", action: nil, keyEquivalent: ""))
         menu.addItem(itemLlama)
         menu.addItem(itemWhisper)
         menu.addItem(itemModel)
+        menu.addItem(itemVoice)
         menu.addItem(itemHint)
         menu.addItem(itemStatus)
         menu.addItem(NSMenuItem.separator())
@@ -593,6 +632,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .background).async { self.startLlamaServer() }
     }
 
+    @objc func selectVoice(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard idx != currentVoiceIndex else { return }
+        let voice = VOICES[idx]
+
+        if voice.isDownloaded {
+            currentVoiceIndex = idx
+            voiceMenuItems.forEach { $0.state = .off }
+            voiceMenuItems[idx].state = .on
+            voiceMenuItems[idx].title = voice.name
+            itemVoice.title = "  🗣️ \(voice.name)"
+            log("🗣️ Voice switched to \(voice.name)")
+        } else {
+            // Download then switch
+            log("⬇️ Downloading voice: \(voice.name) (~60 MB)…")
+            DispatchQueue.main.async {
+                self.voiceMenuItems[idx].title = "\(voice.name)  ⏳"
+                self.itemVoice.title = "  🗣️ Downloading \(voice.name)…"
+            }
+            DispatchQueue.global(qos: .background).async {
+                try? FileManager.default.createDirectory(atPath: VOICES_DIR,
+                    withIntermediateDirectories: true)
+                let ok1 = self.downloadFile(from: voice.onnxURL, to: voice.path)
+                let ok2 = self.downloadFile(from: voice.jsonURL, to: voice.path + ".json")
+                DispatchQueue.main.async {
+                    if ok1 && ok2 {
+                        self.currentVoiceIndex = idx
+                        self.voiceMenuItems.forEach { $0.state = .off }
+                        self.voiceMenuItems[idx].state = .on
+                        self.voiceMenuItems[idx].title = voice.name
+                        self.itemVoice.title = "  🗣️ \(voice.name)"
+                        log("✅ Voice ready: \(voice.name)")
+                    } else {
+                        self.voiceMenuItems[idx].title = "\(voice.name)  ↓"
+                        self.itemVoice.title = "  🗣️ \(VOICES[self.currentVoiceIndex].name)"
+                        log("❌ Failed to download voice: \(voice.name)")
+                    }
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func downloadFile(from urlString: String, to dest: String) -> Bool {
+        guard let url = URL(string: urlString) else { return false }
+        var req = URLRequest(url: url, timeoutInterval: 300)
+        req.httpMethod = "GET"
+        var success = false
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            if let data = data, (resp as? HTTPURLResponse)?.statusCode == 200 {
+                success = (try? data.write(to: URL(fileURLWithPath: dest))) != nil
+            }
+            sem.signal()
+        }.resume()
+        sem.wait()
+        return success
+    }
+
     // ── Recording ──────────────────────────────────────────────────────────────
     func startRecording() {
         guard bothReady() else {
@@ -647,9 +745,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             // Step 4: TTS
             self.state = .speaking
-            let ttsEngine = FileManager.default.fileExists(atPath: PIPER_MODEL) ? "Piper" : "say"
+            let voicePath = VOICES[self.currentVoiceIndex].path
+            let ttsEngine = FileManager.default.fileExists(atPath: voicePath) ? "Piper (\(VOICES[self.currentVoiceIndex].name))" : "say"
             log("🔊 Speaking via \(ttsEngine)…")
-            speak(self.lastReply)
+            speak(self.lastReply, modelPath: voicePath)
 
             log("✅ Done\n")
             self.state = .idle
