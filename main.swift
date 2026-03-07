@@ -55,12 +55,16 @@ let LLAMA_URL      = "http://127.0.0.1:\(LLAMA_PORT)"
 let WHISPER_URL    = "http://127.0.0.1:\(WHISPER_PORT)"
 
 // ── Logger ────────────────────────────────────────────────────────────────────
+// Serial queue keeps concurrent log() calls from interleaving bytes mid–emoji
+private let logQueue = DispatchQueue(label: "com.raju.log")
+
 func log(_ msg: String) {
     let fmt = DateFormatter()
     fmt.dateFormat = "HH:mm:ss"
     let line = "[\(fmt.string(from: Date()))] \(msg)\n"
     print(line, terminator: "")
-    if let data = line.data(using: .utf8) {
+    guard let data = line.data(using: .utf8) else { return }
+    logQueue.async {
         if FileManager.default.fileExists(atPath: LOG_FILE) {
             if let fh = FileHandle(forWritingAtPath: LOG_FILE) {
                 fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
@@ -306,7 +310,13 @@ func askLLMWithTools(query: String) -> String {
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
     If you need live system data to answer, output ONLY one line in this exact format:
     TOOL: <bash command>
-    Use commands like: ps -Axo pid,args,%cpu,%mem -r | head -8 , df -h / , vm_stat , pmset -g batt , ifconfig en0 , uptime
+    Use SIMPLE commands — do NOT add extra awk/sort/grep/head pipes:
+      ps -Axo pid,args,%cpu,%mem -r | head -8
+      df -h /
+      vm_stat
+      pmset -g batt
+      ifconfig en0
+      uptime
     If you do NOT need live data, answer directly in 1-3 sentences. Do not mix a TOOL line with text.
     <|im_end|>
     <|im_start|>user
@@ -325,8 +335,35 @@ func askLLMWithTools(query: String) -> String {
     guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
 
     log("🔧 Tool call: \(cmd)")
-    let toolOut = runTool(cmd)
+    var toolOut = runTool(cmd)
     log("🔧 Tool output (\(toolOut.count)c): \(toolOut.prefix(200))")
+
+    // Retry if the LLM's command produced useless output (e.g. just a header line,
+    // or the model added extra awk/sort pipes that ate all the data).
+    let usefulLines = toolOut.components(separatedBy: "\n")
+        .filter { !$0.trimmed.isEmpty }
+    if usefulLines.count < 2 || toolOut.trimmed.count < 20 {
+        // Build a known-good fallback: strip extra pipes for non-ps commands,
+        // use canonical ps command for process queries.
+        let fallback: String
+        if cmd.lowercased().contains("ps ") {
+            fallback = "ps -Axo pid,args,%cpu,%mem -r | head -8"
+        } else {
+            fallback = cmd.components(separatedBy: "|").first?.trimmed ?? cmd
+        }
+        if fallback != cmd {
+            log("⚠️ Sparse output (\(toolOut.count)c) — retrying: \(fallback)")
+            toolOut = runTool(fallback)
+            log("🔧 Retry output (\(toolOut.count)c): \(toolOut.prefix(200))")
+        }
+    }
+
+    // Guarantee at least 5 non-empty lines reach the LLM; trim to 10 max to save context.
+    let topLines = toolOut.components(separatedBy: "\n")
+        .filter { !$0.trimmed.isEmpty }
+        .prefix(10)
+        .joined(separator: "\n")
+    let dataForLLM = topLines.isEmpty ? "(command returned no output)" : topLines
 
     // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
     // Just give them the data and ask for a spoken answer
@@ -337,7 +374,7 @@ func askLLMWithTools(query: String) -> String {
     <|im_end|>
     <|im_start|>user
     Live system data (from `\(cmd)`):
-    \(toolOut)
+    \(dataForLLM)
 
     Question: \(query)
     <|im_end|>
@@ -559,7 +596,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func showLog() { NSWorkspace.shared.open(URL(fileURLWithPath: LOG_FILE)) }
+    @objc func showLog() {
+        // Open in TextEdit — it auto-detects UTF-8, so emoji display correctly.
+        // Console.app (the macOS default for .log) renders multi-byte chars as Latin-1 garbage.
+        let url = URL(fileURLWithPath: LOG_FILE)
+        if let textEdit = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") {
+            NSWorkspace.shared.open([url], withApplicationAt: textEdit,
+                                    configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     // ── Server toggle (stop / start from menu) ─────────────────────────────────
     @objc func toggleLlama() {
