@@ -406,6 +406,17 @@ func askLLMWithTools(query: String) -> String {
         .joined(separator: "\n")
     let dataForLLM = topLines.isEmpty ? "(command returned no output)" : topLines
 
+    // Tell the LLM how the ps data is sorted so it doesn't confuse CPU% with RAM%
+    let sortNote: String
+    if cmd.contains("-m") {
+        sortNote = "sorted by RAM usage (highest first)"
+    } else if cmd.contains("-r") {
+        sortNote = "sorted by CPU usage (highest first)"
+    } else {
+        sortNote = ""
+    }
+    let sortLabel = sortNote.isEmpty ? "" : "Note: list is \(sortNote).\n"
+
     // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
     // Just give them the data and ask for a spoken answer
     let p2 = """
@@ -415,7 +426,7 @@ func askLLMWithTools(query: String) -> String {
     <|im_end|>
     <|im_start|>user
     Live system data (from `\(cmd)`):
-    \(dataForLLM)
+    \(sortLabel)\(dataForLLM)
 
     Question: \(query)
     <|im_end|>
