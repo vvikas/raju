@@ -680,8 +680,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             itemLaunchAtLogin.state = .off
             log("🚫 Removed from launch at login")
         } else {
-            let execPath = Bundle.main.executablePath
-                ?? ProcessInfo.processInfo.arguments[0]
+            // Prefer running the .app bundle so mic permission is tied to it
+            let bundleBin = "\(HOME)/Applications/Raju.app/Contents/MacOS/Raju"
+            let execPath  = FileManager.default.fileExists(atPath: bundleBin)
+                ? bundleBin
+                : (Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0])
             let xml = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -701,7 +704,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? xml.write(toFile: path, atomically: true, encoding: .utf8)
             shell("/bin/launchctl", ["load", path])
             itemLaunchAtLogin.state = .on
-            log("✅ Added to launch at login")
+            log("✅ Added to launch at login — using \(execPath)")
         }
     }
 

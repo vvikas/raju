@@ -116,18 +116,49 @@ if [[ ! -f "$PIPER_MODEL" ]]; then
 fi
 ok "Piper voice model at $PIPER_MODEL"
 
-# ── 10. Compile Raju ──────────────────────────────────────────────────────────
+# ── 10. Compile + package as .app bundle ──────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP="$HOME/Applications/Raju.app"
+APP_BIN="$APP/Contents/MacOS/Raju"
+
 info "Compiling Raju…"
 swiftc "$SCRIPT_DIR/main.swift" -o "$SCRIPT_DIR/Raju" -framework Cocoa
-ok "Raju compiled at $SCRIPT_DIR/Raju"
+ok "Raju compiled"
+
+info "Creating Raju.app bundle in ~/Applications…"
+mkdir -p "$APP/Contents/MacOS"
+cp "$SCRIPT_DIR/Raju" "$APP_BIN"
+chmod +x "$APP_BIN"
+
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>              <string>Raju</string>
+  <key>CFBundleIdentifier</key>        <string>com.raju.app</string>
+  <key>CFBundleExecutable</key>        <string>Raju</string>
+  <key>CFBundleVersion</key>           <string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundlePackageType</key>       <string>APPL</string>
+  <key>LSUIElement</key>               <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Raju needs microphone access to hear your voice commands.</string>
+  <key>NSPrincipalClass</key>          <string>NSApplication</string>
+</dict>
+</plist>
+PLIST
+ok "Raju.app created at $APP"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════"
-echo -e "${GREEN}  All done! Run Raju with:${NC}"
-echo "  $SCRIPT_DIR/Raju"
+echo -e "${GREEN}  All done!${NC}"
 echo ""
-echo "  Or add to login items for auto-start."
+echo "  Launch Raju (double-click or run):"
+echo "  open ~/Applications/Raju.app"
+echo ""
+echo "  Then right-click the 🎙️ icon →"
+echo "  'Launch at Login' to auto-start."
 echo "══════════════════════════════════════════"
 echo ""
