@@ -70,7 +70,10 @@ func log(_ msg: String) {
                 fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
             }
         } else {
-            try? data.write(to: URL(fileURLWithPath: LOG_FILE))
+            // Prepend UTF-8 BOM (EF BB BF) so TextEdit/editors auto-detect UTF-8
+            // Without it, macOS defaults to Mac Roman and emoji look like garbage.
+            let bom = Data([0xEF, 0xBB, 0xBF])
+            try? (bom + data).write(to: URL(fileURLWithPath: LOG_FILE))
         }
     }
 }
@@ -329,9 +332,24 @@ func askLLMWithTools(query: String) -> String {
 
     // Check only the first line — ignore any extra text the model may have generated
     let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
-    guard firstLine.hasPrefix("TOOL:") else { return r1 }
 
-    let cmd = String(firstLine.dropFirst(5)).trimmed
+    // Small models sometimes forget the TOOL: prefix and output a raw shell command.
+    // Detect those so we don't accidentally speak a bash one-liner aloud.
+    let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
+                          "netstat", "iostat", "sw_vers", "sysctl ", "diskutil"]
+    let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
+                      || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
+
+    guard firstLine.hasPrefix("TOOL:") || looksLikeShell else { return r1 }
+
+    // Strip TOOL: prefix if present; otherwise the line itself is the command
+    let cmd: String
+    if firstLine.hasPrefix("TOOL:") {
+        cmd = String(firstLine.dropFirst(5)).trimmed
+    } else {
+        log("⚠️ LLM skipped TOOL: prefix — treating as tool call: \(firstLine)")
+        cmd = firstLine
+    }
     guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
 
     log("🔧 Tool call: \(cmd)")
@@ -383,10 +401,12 @@ func askLLMWithTools(query: String) -> String {
     """
     let r2 = callLlama(prompt: p2, maxTokens: 150).trimmed
 
-    // Safety net: if model still emits TOOL: drop that line and return the rest
-    if r2.hasPrefix("TOOL:") {
+    // Safety net: never speak a TOOL: line or a raw shell command
+    let r2LooksLikeShell = knownShellCmds.contains(where: { r2.hasPrefix($0) })
+                        || (r2.contains(" | ") && r2.count < 200 && !r2.contains("?"))
+    if r2.hasPrefix("TOOL:") || r2LooksLikeShell {
         let rest = r2.components(separatedBy: "\n").dropFirst().joined(separator: "\n").trimmed
-        return rest.isEmpty ? "I ran \(cmd) but couldn't summarise the output." : rest
+        return rest.isEmpty ? "I ran the command but couldn't summarise the results." : rest
     }
     return r2
 }
