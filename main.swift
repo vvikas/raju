@@ -16,17 +16,25 @@ let AUDIO_FILE     = "/tmp/raju_input.wav"
 let LOG_FILE       = "\(HOME)/Raju/raju.log"
 let VOICES_DIR     = "\(HOME)/.raju/voices"
 
+// ── Prompt format — each model family uses different chat tokens ──────────────
+enum PromptFormat {
+    case chatML  // <|im_start|>system … <|im_end|>   (Qwen2, DeepSeek, TinyLlama)
+    case phi3    // <|system|> … <|end|>              (Phi-3 / Phi-3.5)
+}
+
 // ── Available LLM models ──────────────────────────────────────────────────────
 struct LLMModel {
     let name: String
     let file: String
+    let format: PromptFormat
     var path: String { "\(HOME)/local_llms/llama.cpp/models/\(file)" }
 }
 
 let MODELS: [LLMModel] = [
-    LLMModel(name: "Qwen2 1.5B",          file: "qwen2-1.5b.gguf"),
-    LLMModel(name: "DeepSeek-Coder 1.3B", file: "deepseek-coder-1.3b.gguf"),
-    LLMModel(name: "TinyLlama 1.1B",      file: "tinyllama.gguf"),
+    LLMModel(name: "Qwen2 1.5B",          file: "qwen2-1.5b.gguf",                  format: .chatML),
+    LLMModel(name: "DeepSeek-Coder 1.3B", file: "deepseek-coder-1.3b.gguf",         format: .chatML),
+    LLMModel(name: "TinyLlama 1.1B",      file: "tinyllama.gguf",                   format: .chatML),
+    LLMModel(name: "Phi-3.5 Mini 3.8B",   file: "phi-3.5-mini-instruct-q4.gguf",   format: .phi3),
 ]
 
 // ── Available Piper voices ────────────────────────────────────────────────────
@@ -276,15 +284,32 @@ func transcribeViaHTTP() -> String {
     return result
 }
 
+// ── Prompt builder — wraps system+user in the right chat template ─────────────
+func buildPrompt(system: String, user: String, format: PromptFormat) -> String {
+    switch format {
+    case .chatML:
+        return "<|im_start|>system\n\(system)\n<|im_end|>\n<|im_start|>user\n\(user)\n<|im_end|>\n<|im_start|>assistant\n\n"
+    case .phi3:
+        return "<|system|>\n\(system)<|end|>\n<|user|>\n\(user)<|end|>\n<|assistant|>\n"
+    }
+}
+
+func stopTokens(for format: PromptFormat) -> [String] {
+    switch format {
+    case .chatML: return ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
+    case .phi3:   return ["<|end|>", "<|endoftext|>", "<|user|>"]
+    }
+}
+
 // ── Raw llama-server call — send prompt, get completion ───────────────────────
-func callLlama(prompt: String, maxTokens: Int = 200) -> String {
+func callLlama(prompt: String, maxTokens: Int = 200, stop: [String] = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]) -> String {
     guard let url = URL(string: "\(LLAMA_URL)/completion") else { return "" }
     let body: [String: Any] = [
         "prompt": prompt,
         "n_predict": maxTokens,
         "temperature": 0.7,
         "repeat_penalty": 1.1,
-        "stop": ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
+        "stop": stop
     ]
     guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return "" }
     var req = URLRequest(url: url, timeoutInterval: 120)
@@ -307,14 +332,14 @@ func callLlama(prompt: String, maxTokens: Int = 200) -> String {
 }
 
 // ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
-func askLLMWithTools(query: String) -> String {
+func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let timeFmt = DateFormatter()
     timeFmt.dateFormat = "EEEE, MMM d yyyy, HH:mm"
     let now = timeFmt.string(from: Date())
+    let stops = stopTokens(for: format)
 
     // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL: line
-    let p1 = """
-    <|im_start|>system
+    let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
     If you need live system data to answer, output ONLY one line in this exact format:
     TOOL: <bash command>
@@ -328,14 +353,9 @@ func askLLMWithTools(query: String) -> String {
       uptime
     Do NOT add extra awk/sort/grep/xargs/kill pipes. One simple command only.
     If you do NOT need live data, answer directly in 1-3 sentences. Do not mix a TOOL line with text.
-    <|im_end|>
-    <|im_start|>user
-    \(query)
-    <|im_end|>
-    <|im_start|>assistant
-
     """
-    let r1 = callLlama(prompt: p1, maxTokens: 60).trimmed
+    let p1 = buildPrompt(system: sys1, user: query, format: format)
+    let r1 = callLlama(prompt: p1, maxTokens: 60, stop: stops).trimmed
 
     // Check only the first line — ignore any extra text the model may have generated
     let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
@@ -404,22 +424,10 @@ func askLLMWithTools(query: String) -> String {
     let sortLabel = sortNote.isEmpty ? "" : "Note: list is \(sortNote).\n"
 
     // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
-    // Just give them the data and ask for a spoken answer
-    let p2 = """
-    <|im_start|>system
-    You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.
-    Use ONLY the data below — do not invent numbers or process names.
-    <|im_end|>
-    <|im_start|>user
-    Live system data (from `\(cmd)`):
-    \(sortLabel)\(dataForLLM)
-
-    Question: \(query)
-    <|im_end|>
-    <|im_start|>assistant
-
-    """
-    let r2 = callLlama(prompt: p2, maxTokens: 150).trimmed
+    let sys2 = "You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.\nUse ONLY the data below — do not invent numbers or process names."
+    let usr2 = "Live system data (from `\(cmd)`):\n\(sortLabel)\(dataForLLM)\n\nQuestion: \(query)"
+    let p2 = buildPrompt(system: sys2, user: usr2, format: format)
+    let r2 = callLlama(prompt: p2, maxTokens: 150, stop: stops).trimmed
 
     // Safety net: never speak a TOOL: line or a raw shell command
     let r2LooksLikeShell = knownShellCmds.contains(where: { r2.hasPrefix($0) })
@@ -900,7 +908,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.state = .thinking
             log("🤔 Asking LLM (tool-use mode)…")
             let t1    = Date()
-            let reply = askLLMWithTools(query: query)
+            let reply = askLLMWithTools(query: query, format: MODELS[self.currentModelIndex].format)
             let lt    = String(format: "%.1f", Date().timeIntervalSince(t1))
             self.lastReply = reply.isEmpty ? "Sorry, I didn't get that." : reply
             log("💬 LLM reply in \(lt)s → \"\(self.lastReply)\"")
