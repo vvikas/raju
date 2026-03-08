@@ -341,18 +341,20 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL: line
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
-    If you need live system data to answer, output ONLY one line in this exact format:
-    TOOL: <bash command>
-    READ-ONLY commands only — never kill, stop, or modify anything:
-      ps -Axo pid,args,%cpu,%mem -r | head -8   (CPU questions — -r sorts by CPU)
-      ps -Axo pid,args,%cpu,%mem -m | head -8   (RAM/memory questions — -m sorts by RAM)
-      df -h /
-      vm_stat
-      pmset -g batt
-      ifconfig en0
-      uptime
-    Do NOT add extra awk/sort/grep/xargs/kill pipes. One simple command only.
-    If you do NOT need live data, answer directly in 1-3 sentences. Do not mix a TOOL line with text.
+    ONLY use a tool if the question is directly answered by one of these commands:
+      ps -Axo pid,args,%cpu,%mem -r | head -8   → which apps use the most CPU
+      ps -Axo pid,args,%cpu,%mem -m | head -8   → which apps use the most RAM/memory
+      df -h /                                   → disk space
+      vm_stat                                   → memory/RAM stats
+      pmset -g batt                             → battery level and status
+      ifconfig en0                              → IP address, network
+      uptime                                    → system uptime and load
+    If you use a tool, output ONLY one line:
+    TOOL: <command from the list above>
+    Do NOT add extra pipes, awk, sort, grep, or xargs.
+    Answer directly (no tool) for: time, date, weather, temperature outside, news,
+    stock prices, general knowledge, math, or anything not in the list above.
+    If you do NOT need live data, answer in 1-3 sentences. Do not mix a TOOL line with text.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
     let r1 = callLlama(prompt: p1, maxTokens: 60, stop: stops).trimmed
@@ -424,7 +426,11 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let sortLabel = sortNote.isEmpty ? "" : "Note: list is \(sortNote).\n"
 
     // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
-    let sys2 = "You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.\nUse ONLY the data below — do not invent numbers or process names."
+    let sys2 = """
+    You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.
+    Use ONLY the data below — do not invent numbers or process names.
+    Never refuse. If the data does not answer the question, say: "I don't have that data right now."
+    """
     let usr2 = "Live system data (from `\(cmd)`):\n\(sortLabel)\(dataForLLM)\n\nQuestion: \(query)"
     let p2 = buildPrompt(system: sys2, user: usr2, format: format)
     let r2 = callLlama(prompt: p2, maxTokens: 150, stop: stops).trimmed
@@ -435,6 +441,15 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     if r2.hasPrefix("TOOL:") || r2LooksLikeShell {
         let rest = r2.components(separatedBy: "\n").dropFirst().joined(separator: "\n").trimmed
         return rest.isEmpty ? "I ran the command but couldn't summarise the results." : rest
+    }
+
+    // Detect refusal phrases ("Sorry, but I can't assist", "I'm not able to", etc.)
+    let refusalPhrases = ["can't assist", "cannot assist", "i'm not able", "i am not able",
+                          "i'm unable", "i cannot help", "not able to help", "sorry, but i"]
+    let r2Low = r2.lowercased()
+    if refusalPhrases.contains(where: { r2Low.contains($0) }) {
+        log("⚠️ LLM refused in Turn 2 — returning fallback")
+        return "I don't have that data right now."
     }
     return r2
 }
@@ -556,7 +571,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if isLlamaReady() {
             let name = MODELS[currentModelIndex].name
             log("⚡ llama-server already running on :\(LLAMA_PORT) — \(name)")
-            DispatchQueue.main.async { self.itemLlama.title = "  ⚡ LLM ready (\(name))" }
+            DispatchQueue.main.async {
+                self.itemLlama.title       = "  ⚡ LLM ready (\(name))"
+                self.itemLlamaToggle.title = "  ⏹ Stop LLM"
+            }
             return
         }
         let model = MODELS[currentModelIndex]
@@ -584,13 +602,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if secs % 20 == 0 { log("⏳ \(model.name) still loading… (\(secs)s)") }
         }
         log("⚠️ llama-server failed to start within 3 min")
-        DispatchQueue.main.async { self.itemLlama.title = "  ❌ \(model.name) failed to load" }
+        DispatchQueue.main.async {
+            self.itemLlama.title       = "  ❌ \(model.name) failed to load"
+            self.itemLlamaToggle.title = "  ▶ Start LLM"
+        }
     }
 
     func startWhisperServer() {
         if isWhisperReady() {
             log("⚡ whisper-server already running on :\(WHISPER_PORT)")
-            DispatchQueue.main.async { self.itemWhisper.title = "  ⚡ Whisper ready (small)" }
+            DispatchQueue.main.async {
+                self.itemWhisper.title       = "  ⚡ Whisper ready (small)"
+                self.itemWhisperToggle.title = "  ⏹ Stop Whisper"
+            }
             return
         }
         log("🚀 Starting whisper-server (small) on :\(WHISPER_PORT)…")
@@ -616,7 +640,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if secs % 10 == 0 { log("⏳ Whisper still loading… (\(secs)s)") }
         }
         log("⚠️ whisper-server failed to start")
-        DispatchQueue.main.async { self.itemWhisper.title = "  ❌ Whisper failed to load" }
+        DispatchQueue.main.async {
+            self.itemWhisper.title       = "  ❌ Whisper failed to load"
+            self.itemWhisperToggle.title = "  ▶ Start Whisper"
+        }
     }
 
     func bothReady() -> Bool { isLlamaReady() && isWhisperReady() }
