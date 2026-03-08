@@ -7,7 +7,6 @@ let HOME           = FileManager.default.homeDirectoryForCurrentUser.path
 let WHISPER_SERVER = "\(HOME)/local_llms/whisper.cpp/build/bin/whisper-server"
 let WHISPER_MODEL  = "\(HOME)/local_llms/whisper.cpp/models/ggml-small.bin"
 let LLAMA_SERVER   = "\(HOME)/local_llms/llama.cpp/build/bin/llama-server"
-let LLAMA_MODEL    = "\(HOME)/local_llms/llama.cpp/models/qwen2-1.5b.gguf"
 let REC_BIN        = "/usr/local/bin/rec"
 let PYTHON3_BIN    = "/usr/local/bin/python3"
 let PIPER_OUT      = "/tmp/raju_tts.wav"
@@ -16,48 +15,7 @@ let AUDIO_FILE     = "/tmp/raju_input.wav"
 let LOG_FILE       = "\(HOME)/Raju/raju.log"
 let VOICES_DIR     = "\(HOME)/.raju/voices"
 
-// ── Prompt format — each model family uses different chat tokens ──────────────
-enum PromptFormat {
-    case chatML      // <|im_start|>system … <|im_end|>       (Qwen2)
-    case deepseek    // ### Instruction: … ### Response:       (DeepSeek-Coder)
-    case zephyr      // <|system|> … </s>                     (TinyLlama)
-    case phi3        // <|system|> … <|end|>                  (Phi-3 / Phi-3.5)
-}
-
-// ── Available LLM models ──────────────────────────────────────────────────────
-struct LLMModel {
-    let name: String
-    let file: String
-    let format: PromptFormat
-    var path: String { "\(HOME)/local_llms/llama.cpp/models/\(file)" }
-}
-
-let MODELS: [LLMModel] = [
-    LLMModel(name: "Qwen2 1.5B",          file: "qwen2-1.5b.gguf",                  format: .chatML),
-    LLMModel(name: "DeepSeek-Coder 1.3B", file: "deepseek-coder-1.3b.gguf",         format: .deepseek),
-    LLMModel(name: "TinyLlama 1.1B",      file: "tinyllama.gguf",                   format: .zephyr),
-    LLMModel(name: "Phi-3.5 Mini 3.8B",   file: "phi-3.5-mini-instruct-q4.gguf",   format: .phi3),
-]
-
-// ── Available Piper voices ────────────────────────────────────────────────────
-struct PiperVoice {
-    let name: String
-    let file: String      // e.g. "en_US-lessac-medium.onnx"
-    let urlPath: String   // HuggingFace path under piper-voices/main/
-    var path: String    { "\(VOICES_DIR)/\(file)" }
-    var onnxURL: String { "https://huggingface.co/rhasspy/piper-voices/resolve/main/\(urlPath)/\(file)" }
-    var jsonURL: String { "\(onnxURL).json" }
-    var isDownloaded: Bool { FileManager.default.fileExists(atPath: path) }
-}
-
-let VOICES: [PiperVoice] = [
-    PiperVoice(name: "Lessac (US Female)",   file: "en_US-lessac-medium.onnx",  urlPath: "en/en_US/lessac/medium"),
-    PiperVoice(name: "Ryan (US Male)",       file: "en_US-ryan-medium.onnx",    urlPath: "en/en_US/ryan/medium"),
-    PiperVoice(name: "Amy (US Female)",      file: "en_US-amy-medium.onnx",     urlPath: "en/en_US/amy/medium"),
-    PiperVoice(name: "Joe (US Male)",        file: "en_US-joe-medium.onnx",     urlPath: "en/en_US/joe/medium"),
-    PiperVoice(name: "Jenny (GB Female)",    file: "en_GB-jenny-medium.onnx",   urlPath: "en/en_GB/jenny/medium"),
-    PiperVoice(name: "Alan (GB Male)",       file: "en_GB-alan-medium.onnx",    urlPath: "en/en_GB/alan/medium"),
-]
+// Models.swift — LLMModel, MODELS, PiperVoice, VOICES
 
 let LLAMA_PORT     = 8080
 let WHISPER_PORT   = 8081
@@ -291,10 +249,6 @@ func buildPrompt(system: String, user: String, format: PromptFormat) -> String {
     switch format {
     case .chatML:
         return "<|im_start|>system\n\(system)\n<|im_end|>\n<|im_start|>user\n\(user)\n<|im_end|>\n<|im_start|>assistant\n"
-    case .deepseek:
-        return "\(system)\n### Instruction:\n\(user)\n### Response:\n"
-    case .zephyr:
-        return "<|system|>\n\(system)</s>\n<|user|>\n\(user)</s>\n<|assistant|>\n"
     case .phi3:
         return "<|system|>\n\(system)<|end|>\n<|user|>\n\(user)<|end|>\n<|assistant|>\n"
     }
@@ -302,10 +256,8 @@ func buildPrompt(system: String, user: String, format: PromptFormat) -> String {
 
 func stopTokens(for format: PromptFormat) -> [String] {
     switch format {
-    case .chatML:   return ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
-    case .deepseek: return ["<|EOT|>", "### Instruction:"]
-    case .zephyr:   return ["</s>", "<|user|>"]
-    case .phi3:     return ["<|end|>", "<|endoftext|>", "<|user|>"]
+    case .chatML: return ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
+    case .phi3:   return ["<|end|>", "<|endoftext|>", "<|user|>"]
     }
 }
 
@@ -611,6 +563,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             item.tag    = i
             item.target = self
             item.state  = (i == 0) ? .on : .off
+            if !model.isDownloaded && model.url != nil { item.title = model.name + "  ↓" }
             modelSubmenu.addItem(item)
             modelMenuItems.append(item)
         }
@@ -918,28 +871,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func selectModel(_ sender: NSMenuItem) {
         let idx = sender.tag
         guard idx != currentModelIndex else { return }
-        currentModelIndex = idx
         let model = MODELS[idx]
 
-        // Update checkmarks
+        if model.isDownloaded {
+            doSelectModel(idx)
+        } else if let urlStr = model.url {
+            log("⬇️ Downloading model: \(model.name)…")
+            DispatchQueue.main.async {
+                self.modelMenuItems[idx].title = "\(model.name)  ⏳"
+                self.itemModel.title = "  🧠 Downloading \(model.name)…"
+            }
+            DispatchQueue.global(qos: .background).async {
+                let modelsDir = "\(HOME)/local_llms/llama.cpp/models"
+                try? FileManager.default.createDirectory(atPath: modelsDir, withIntermediateDirectories: true)
+                let ok = self.downloadFile(from: urlStr, to: model.path)
+                DispatchQueue.main.async {
+                    if ok {
+                        self.modelMenuItems[idx].title = model.name
+                        log("✅ Model downloaded: \(model.name)")
+                        self.doSelectModel(idx)
+                    } else {
+                        self.modelMenuItems[idx].title = "\(model.name)  ↓"
+                        self.itemModel.title = "  🧠 \(MODELS[self.currentModelIndex].name)"
+                        log("❌ Failed to download model: \(model.name)")
+                    }
+                }
+            }
+        } else {
+            log("⚠️ \(model.name) is not downloaded and has no download URL")
+        }
+    }
+
+    func doSelectModel(_ idx: Int) {
+        currentModelIndex = idx
+        let model = MODELS[idx]
         modelMenuItems.forEach { $0.state = .off }
         modelMenuItems[idx].state = .on
         itemModel.title = "  🧠 \(model.name)"
-
         log("🔄 Switching to \(model.name) — stopping old server…")
         DispatchQueue.main.async { self.itemLlama.title = "  ⏳ Loading \(model.name)…" }
-
         llamaProcess?.terminate()
         llamaProcess = nil
-        pkillByName("llama-server")   // also kills pre-existing servers we didn't launch
-
+        pkillByName("llama-server")
         DispatchQueue.global(qos: .background).async {
-            // Wait for the old server to actually stop responding before starting the new one.
             var waited = 0
-            while isLlamaReady() && waited < 15 {
-                Thread.sleep(forTimeInterval: 1)
-                waited += 1
-            }
+            while isLlamaReady() && waited < 15 { Thread.sleep(forTimeInterval: 1); waited += 1 }
             if waited > 0 { log("⏳ Old server stopped after \(waited)s") }
             self.startLlamaServer()
         }

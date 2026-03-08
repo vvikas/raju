@@ -82,19 +82,14 @@ ok "Whisper model at $WHISPER_MODEL"
 MODELS_DIR="$HOME/local_llms/llama.cpp/models"
 mkdir -p "$MODELS_DIR"
 
-declare -A MODELS
-MODELS["qwen2-1.5b.gguf"]="https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf"
-MODELS["deepseek-coder-1.3b.gguf"]="https://huggingface.co/TheBloke/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf"
-MODELS["tinyllama.gguf"]="https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-
-for FILE in "${!MODELS[@]}"; do
-  PATH_="$MODELS_DIR/$FILE"
-  if [[ ! -f "$PATH_" ]]; then
-    info "Downloading $FILE…"
-    curl -L --progress-bar -o "$PATH_" "${MODELS[$FILE]}"
-  fi
-  ok "Model: $FILE"
-done
+# Only Qwen2 is pre-installed; other models download on demand via the in-app menu (↓)
+QWEN2="$MODELS_DIR/qwen2-1.5b.gguf"
+if [[ ! -f "$QWEN2" ]]; then
+  info "Downloading Qwen2 1.5B (~940 MB)…"
+  curl -L --progress-bar -o "$QWEN2" \
+    "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf"
+fi
+ok "Model: qwen2-1.5b.gguf"
 
 # ── 9. Piper TTS ──────────────────────────────────────────────────────────────
 VOICES_DIR="$HOME/.raju/voices"
@@ -122,7 +117,7 @@ APP="$HOME/Applications/Raju.app"
 APP_BIN="$APP/Contents/MacOS/Raju"
 
 info "Compiling Raju…"
-swiftc "$SCRIPT_DIR/main.swift" -o "$SCRIPT_DIR/Raju" -framework Cocoa
+swiftc "$SCRIPT_DIR/main.swift" "$SCRIPT_DIR/Models.swift" -o "$SCRIPT_DIR/Raju" -framework Cocoa
 ok "Raju compiled"
 
 info "Creating Raju.app bundle in ~/Applications…"
