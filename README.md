@@ -81,14 +81,58 @@ The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up
 | **Release** | Stop → transcribe → think → speak |
 | **Right-click** | Open menu |
 
-### Example queries
+### What you can ask
 
-- *"What's using the most CPU right now?"*
-- *"How much RAM is free?"*
-- *"What's my battery level?"*
-- *"How much disk space do I have?"*
-- *"What's my IP address?"*
-- *"What time is it?"*
+**System & Performance**
+| Query | What Raju does |
+|-------|---------------|
+| "What's using the most CPU?" | Runs `ps`, speaks top processes |
+| "What's eating my RAM?" | Runs `ps -m`, speaks top memory users |
+| "How much disk space do I have?" | Runs `df -h` |
+| "What's my battery level?" / "How long until my battery dies?" | Runs `pmset -g batt` |
+| "How long has my Mac been on?" | Runs `uptime` |
+
+**Apps & Processes**
+| Query | What Raju does |
+|-------|---------------|
+| "Is Spotify running?" | Checks running processes by name |
+| "What version of Chrome do I have?" | Reads app bundle info |
+
+**Network**
+| Query | What Raju does |
+|-------|---------------|
+| "What's my IP address?" | Runs `ifconfig en0` |
+| "What WiFi network am I on?" | Runs `networksetup -getairportnetwork en0` |
+
+**Files & Search**
+| Query | What Raju does |
+|-------|---------------|
+| "What's the biggest file on my Desktop?" | Runs `ls -lhS ~/Desktop` |
+| "What's the newest file in Downloads?" | Runs `ls -lt ~/Downloads` |
+| "What's taking up space in my home folder?" | Runs `du -sh ~/*` |
+| "Find files I modified today" | Runs `find` with `-mtime 0` |
+| "Find a file called notes.txt" | Runs `find ~/` by name |
+| "Find files on my Desktop containing 'budget'" | Runs `grep -ril` — list copied to clipboard |
+
+**Clipboard**
+| Query | What Raju does |
+|-------|---------------|
+| "What's in my clipboard?" | Runs `pbpaste`, speaks the content |
+
+**Reminders**
+| Query | What Raju does |
+|-------|---------------|
+| "Remind me in 10 minutes to check the oven" | Sets a timer — speaks reminder aloud when it fires |
+| "Remind me in 30 seconds to stand up" | Same, any duration |
+
+**General Knowledge (no tool needed)**
+| Query | What Raju does |
+|-------|---------------|
+| "What time is it?" / "What day is today?" | Answers directly from system time |
+| "How many MB is 2.3 GB?" | LLM computes directly |
+| "What's the capital of France?" | LLM answers directly |
+
+> **Tip:** Long results (file lists, grep matches) are automatically copied to your clipboard so you can paste them anywhere.
 
 ---
 

@@ -338,34 +338,38 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let now = timeFmt.string(from: Date())
     let stops = stopTokens(for: format)
 
-    // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL: line
+    // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL/REMIND line
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
     Use a tool ONLY when the question needs live system or file data. Output ONLY one line:
     TOOL: <bash command>
+    For reminders output ONLY: REMIND: <seconds> <what to say>
 
     System commands:
-      ps -Axo pid,args,%cpu,%mem -r | head -8          → most CPU-hungry apps
-      ps -Axo pid,args,%cpu,%mem -m | head -8          → most RAM-hungry apps
-      df -h /                                          → disk space
-      vm_stat                                          → memory/RAM stats
-      pmset -g batt                                    → battery level
-      ifconfig en0                                     → IP address, network
-      uptime                                           → uptime and load
+      ps -Axo pid,args,%cpu,%mem -r | head -8                           → most CPU-hungry apps
+      ps -Axo pid,args,%cpu,%mem -m | head -8                           → most RAM-hungry apps
+      ps -ax | grep -i "AppName" | grep -v grep | wc -l                 → is a specific app running? (0=no)
+      df -h /                                                           → disk space
+      vm_stat                                                           → memory/RAM stats
+      pmset -g batt                                                     → battery level and time remaining
+      ifconfig en0                                                      → local IP address
+      networksetup -getairportnetwork en0                               → WiFi network name
+      uptime                                                            → how long Mac has been on
+      pbpaste | head -10                                                → clipboard contents
 
-    File commands (use ~/ for home directory):
-      ls -lhS ~/Desktop | head -10                          → biggest files on Desktop
-      ls -lhS ~/Downloads | head -10                        → biggest files in Downloads
-      du -sh ~/Desktop/* | sort -rh | head -5               → folder sizes on Desktop
-      find ~/Desktop -maxdepth 1 -name "*.ext"              → find files by extension
-      find ~/ -maxdepth 4 -name "filename" 2>/dev/null      → find a file by name
-      grep -ril "text" ~/Documents 2>/dev/null | head -20   → files containing text (Documents)
-      grep -ril "text" ~/Desktop 2>/dev/null | head -20     → files containing text (Desktop)
+    File commands:
+      ls -lhS ~/Desktop | head -10                                      → biggest files on Desktop
+      ls -lt ~/Downloads | head -5                                      → newest files in Downloads
+      du -sh ~/* 2>/dev/null | sort -rh | head -10                      → what's taking up space in home
+      find ~/Desktop ~/Downloads ~/Documents -maxdepth 1 -mtime 0 -type f 2>/dev/null → files modified today
+      find ~/ -maxdepth 4 -name "filename" 2>/dev/null                  → find a file by name
+      grep -ril "text" ~/Documents 2>/dev/null | head -20               → files containing specific text
+      defaults read "/Applications/App.app/Contents/Info" CFBundleShortVersionString 2>/dev/null → app version
 
     Do NOT use rm, mv, cp, sudo, or any command that modifies files.
-    Answer directly (no tool) for: weather, outside temperature, news,
-    stock prices, general knowledge, math, or anything not needing live data.
-    Answer in 1-3 sentences. Do not mix a TOOL line with other text.
+    Answer directly (no tool) for: weather, outside temperature, news, stock prices,
+    general knowledge, unit conversion, math, or anything not needing live data.
+    Answer in 1-3 sentences. Do not mix a TOOL or REMIND line with other text.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
     let r1 = callLlama(prompt: p1, maxTokens: 60, stop: stops).trimmed
@@ -377,9 +381,13 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Detect those so we don't accidentally speak a bash one-liner aloud.
     let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
                           "netstat", "iostat", "sw_vers", "sysctl ", "diskutil",
-                          "ls ", "du ", "find ", "locate ", "grep "]
+                          "ls ", "du ", "find ", "locate ", "grep ", "pbpaste",
+                          "networksetup", "defaults ", "mdls ", "mdfind ", "lsof "]
     let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
                       || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
+
+    // Pass reminders straight through — handled by the caller (AppDelegate.stopRecording)
+    if firstLine.hasPrefix("REMIND:") { return firstLine }
 
     guard firstLine.hasPrefix("TOOL:") || looksLikeShell else { return r1 }
 
@@ -966,6 +974,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // Step 4: TTS
             self.state = .speaking
             let voicePath = VOICES[self.currentVoiceIndex].path
+
+            // Handle reminder requests — LLM returns "REMIND: <secs> <message>"
+            if self.lastReply.hasPrefix("REMIND:") {
+                let raw   = String(self.lastReply.dropFirst("REMIND:".count)).trimmed
+                let parts = raw.split(separator: " ", maxSplits: 1)
+                let secs  = max(5.0, Double(String(parts.first ?? "60")) ?? 60)
+                let msg   = parts.count > 1 ? String(parts[1]).trimmed : "Time's up!"
+                let secsInt = Int(secs)
+                let timeDesc = secsInt >= 60
+                    ? "\(secsInt / 60) minute\(secsInt / 60 == 1 ? "" : "s")"
+                    : "\(secsInt) second\(secsInt == 1 ? "" : "s")"
+                log("⏰ Reminder set: \(secsInt)s — \(msg)")
+                DispatchQueue.global().asyncAfter(deadline: .now() + secs) {
+                    log("⏰ Firing reminder: \(msg)")
+                    speak(msg, modelPath: voicePath)
+                }
+                self.lastReply = "Okay, I'll remind you in \(timeDesc)."
+            }
             let ttsEngine = FileManager.default.fileExists(atPath: voicePath) ? "Piper (\(VOICES[self.currentVoiceIndex].name))" : "say"
             log("🔊 Speaking via \(ttsEngine)…")
             speak(self.lastReply, modelPath: voicePath)
