@@ -341,20 +341,29 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL: line
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
-    ONLY use a tool if the question is directly answered by one of these commands:
-      ps -Axo pid,args,%cpu,%mem -r | head -8   → which apps use the most CPU
-      ps -Axo pid,args,%cpu,%mem -m | head -8   → which apps use the most RAM/memory
-      df -h /                                   → disk space
-      vm_stat                                   → memory/RAM stats
-      pmset -g batt                             → battery level and status
-      ifconfig en0                              → IP address, network
-      uptime                                    → system uptime and load
-    If you use a tool, output ONLY one line:
-    TOOL: <command from the list above>
-    Do NOT add extra pipes, awk, sort, grep, or xargs.
-    Answer directly (no tool) for: time, date, weather, temperature outside, news,
-    stock prices, general knowledge, math, or anything not in the list above.
-    If you do NOT need live data, answer in 1-3 sentences. Do not mix a TOOL line with text.
+    Use a tool ONLY when the question needs live system or file data. Output ONLY one line:
+    TOOL: <bash command>
+
+    System commands:
+      ps -Axo pid,args,%cpu,%mem -r | head -8          → most CPU-hungry apps
+      ps -Axo pid,args,%cpu,%mem -m | head -8          → most RAM-hungry apps
+      df -h /                                          → disk space
+      vm_stat                                          → memory/RAM stats
+      pmset -g batt                                    → battery level
+      ifconfig en0                                     → IP address, network
+      uptime                                           → uptime and load
+
+    File commands (use ~/ for home directory):
+      ls -lhS ~/Desktop | head -10                     → biggest files on Desktop
+      ls -lhS ~/Downloads | head -10                   → biggest files in Downloads
+      du -sh ~/Desktop/* | sort -rh | head -5          → folder sizes on Desktop
+      find ~/Desktop -maxdepth 1 -name "*.ext"         → find files by extension
+      find ~/ -maxdepth 4 -name "filename" 2>/dev/null → find a file by name
+
+    Do NOT use rm, mv, cp, sudo, or any command that modifies files.
+    Answer directly (no tool) for: weather, outside temperature, news,
+    stock prices, general knowledge, math, or anything not needing live data.
+    Answer in 1-3 sentences. Do not mix a TOOL line with other text.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
     let r1 = callLlama(prompt: p1, maxTokens: 60, stop: stops).trimmed
@@ -365,7 +374,8 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Small models sometimes forget the TOOL: prefix and output a raw shell command.
     // Detect those so we don't accidentally speak a bash one-liner aloud.
     let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
-                          "netstat", "iostat", "sw_vers", "sysctl ", "diskutil"]
+                          "netstat", "iostat", "sw_vers", "sysctl ", "diskutil",
+                          "ls ", "du ", "find ", "locate "]
     let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
                       || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
 
