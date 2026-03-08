@@ -18,8 +18,10 @@ let VOICES_DIR     = "\(HOME)/.raju/voices"
 
 // ── Prompt format — each model family uses different chat tokens ──────────────
 enum PromptFormat {
-    case chatML  // <|im_start|>system … <|im_end|>   (Qwen2, DeepSeek, TinyLlama)
-    case phi3    // <|system|> … <|end|>              (Phi-3 / Phi-3.5)
+    case chatML      // <|im_start|>system … <|im_end|>       (Qwen2)
+    case deepseek    // ### Instruction: … ### Response:       (DeepSeek-Coder)
+    case zephyr      // <|system|> … </s>                     (TinyLlama)
+    case phi3        // <|system|> … <|end|>                  (Phi-3 / Phi-3.5)
 }
 
 // ── Available LLM models ──────────────────────────────────────────────────────
@@ -32,8 +34,8 @@ struct LLMModel {
 
 let MODELS: [LLMModel] = [
     LLMModel(name: "Qwen2 1.5B",          file: "qwen2-1.5b.gguf",                  format: .chatML),
-    LLMModel(name: "DeepSeek-Coder 1.3B", file: "deepseek-coder-1.3b.gguf",         format: .chatML),
-    LLMModel(name: "TinyLlama 1.1B",      file: "tinyllama.gguf",                   format: .chatML),
+    LLMModel(name: "DeepSeek-Coder 1.3B", file: "deepseek-coder-1.3b.gguf",         format: .deepseek),
+    LLMModel(name: "TinyLlama 1.1B",      file: "tinyllama.gguf",                   format: .zephyr),
     LLMModel(name: "Phi-3.5 Mini 3.8B",   file: "phi-3.5-mini-instruct-q4.gguf",   format: .phi3),
 ]
 
@@ -288,7 +290,11 @@ func transcribeViaHTTP() -> String {
 func buildPrompt(system: String, user: String, format: PromptFormat) -> String {
     switch format {
     case .chatML:
-        return "<|im_start|>system\n\(system)\n<|im_end|>\n<|im_start|>user\n\(user)\n<|im_end|>\n<|im_start|>assistant\n\n"
+        return "<|im_start|>system\n\(system)\n<|im_end|>\n<|im_start|>user\n\(user)\n<|im_end|>\n<|im_start|>assistant\n"
+    case .deepseek:
+        return "\(system)\n### Instruction:\n\(user)\n### Response:\n"
+    case .zephyr:
+        return "<|system|>\n\(system)</s>\n<|user|>\n\(user)</s>\n<|assistant|>\n"
     case .phi3:
         return "<|system|>\n\(system)<|end|>\n<|user|>\n\(user)<|end|>\n<|assistant|>\n"
     }
@@ -296,8 +302,10 @@ func buildPrompt(system: String, user: String, format: PromptFormat) -> String {
 
 func stopTokens(for format: PromptFormat) -> [String] {
     switch format {
-    case .chatML: return ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
-    case .phi3:   return ["<|end|>", "<|endoftext|>", "<|user|>"]
+    case .chatML:   return ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
+    case .deepseek: return ["<|EOT|>", "### Instruction:"]
+    case .zephyr:   return ["</s>", "<|user|>"]
+    case .phi3:     return ["<|end|>", "<|endoftext|>", "<|user|>"]
     }
 }
 
@@ -373,6 +381,30 @@ func resolveToolCommand(number: Int, value: String?) -> String {
     return cmd
 }
 
+// ── Truncation detection — retry with bigger buffer if output was cut mid-token ──
+func looksLikeTruncated(_ s: String) -> Bool {
+    let t = s.trimmed
+    if t.isEmpty { return false }
+    let lastChar = t.last!
+    // Ends mid-quote, mid-pipe, mid-paren, or with backslash
+    if "'\"\\|({".contains(lastChar) { return true }
+    // Ends with pipe-space (command was cut after pipe)
+    if t.hasSuffix("| ") { return true }
+    // Ends with common partial tokens (command was cut mid-pipe chain)
+    if t.hasSuffix("awk") || t.hasSuffix("grep") || t.hasSuffix("sed") { return true }
+    return false
+}
+
+// ── Strip model-specific output prefixes (A:, Answer:, etc.) ──────────────────
+func cleanLLMOutput(_ text: String) -> String {
+    var t = text.trimmed
+    let prefixes = ["A:", "Answer:", "Response:", "Assistant:", "### Response:", "###"]
+    for p in prefixes {
+        if t.hasPrefix(p) { t = String(t.dropFirst(p.count)).trimmed }
+    }
+    return t
+}
+
 // ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
 func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let timeFmt = DateFormatter()
@@ -402,7 +434,13 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       "capital of France?" → Paris is the capital of France.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
-    let r1 = callLlama(prompt: p1, maxTokens: 40, temperature: 0.1, stop: stops).trimmed
+    var r1 = callLlama(prompt: p1, maxTokens: 60, temperature: 0.1, stop: stops).trimmed
+    // If output was truncated mid-token, retry with double buffer
+    if looksLikeTruncated(r1) {
+        log("⚠️ Turn 1 looks truncated (\(r1.suffix(20))) — retrying with 120 tokens")
+        r1 = callLlama(prompt: p1, maxTokens: 120, temperature: 0.1, stop: stops).trimmed
+    }
+    r1 = cleanLLMOutput(r1)
 
     // Check only the first line
     let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
@@ -434,7 +472,6 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
                               "ls ", "du ", "find ", "locate ", "grep ", "pbpaste",
                               "networksetup", "defaults ", "mdls ", "mdfind ", "lsof "]
         let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
-                          || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
         if looksLikeShell {
             log("⚠️ LLM skipped TOOL: prefix — treating as tool call: \(firstLine)")
             cmd = firstLine
@@ -506,7 +543,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     """
     let usr2 = "Live data (from `\(cmd)`):\n\(clipboardNote)\(sortLabel)\(dataForLLM)\n\nQuestion: \(query)"
     let p2 = buildPrompt(system: sys2, user: usr2, format: format)
-    let r2 = callLlama(prompt: p2, maxTokens: 150, stop: stops).trimmed
+    let r2 = cleanLLMOutput(callLlama(prompt: p2, maxTokens: 150, stop: stops))
 
     // Safety net: never speak a TOOL: line or a raw shell command
     let shellPrefixes = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
