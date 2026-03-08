@@ -344,32 +344,33 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     Use a tool ONLY when the question needs live system or file data. Output ONLY one line:
     TOOL: <bash command>
     For reminders output ONLY: REMIND: <seconds> <what to say>
+    CRITICAL: Use ONLY the exact commands listed below. Do NOT add awk, sed, bc, xargs, or extra pipes beyond what is shown here.
 
-    System commands:
-      ps -Axo pid,args,%cpu,%mem -r | head -8                           → most CPU-hungry apps
-      ps -Axo pid,args,%cpu,%mem -m | head -8                           → most RAM-hungry apps
-      ps -ax | grep -i "AppName" | grep -v grep | wc -l                 → is a specific app running? (0=no)
-      df -h /                                                           → disk space
-      vm_stat                                                           → memory/RAM stats
-      pmset -g batt                                                     → battery level and time remaining
-      ifconfig en0                                                      → local IP address
-      networksetup -getairportnetwork en0                               → WiFi network name
-      uptime                                                            → how long Mac has been on
-      pbpaste | head -10                                                → clipboard contents
+    System commands (copy exactly, replace AppName/filename/text with actual values):
+      ps -Axo pid,args,%cpu,%mem -r | head -8        → CPU usage, what is using the most CPU
+      ps -Axo pid,args,%cpu,%mem -m | head -8        → RAM/memory usage, what is eating my memory
+      ps -ax | grep -i "AppName" | grep -v grep | wc -l → is AppName running
+      df -h /                                        → disk space, free storage, how much space
+      vm_stat                                        → virtual memory stats
+      pmset -g batt                                  → battery level, battery percentage, how long until battery dies, charging status, time remaining on battery
+      ifconfig en0                                   → my IP address, local IP
+      networksetup -getairportnetwork en0            → WiFi name, what network am I on
+      uptime                                         → uptime, how long has Mac been on
+      pbpaste | head -10                             → clipboard, what did I copy
 
-    File commands:
-      ls -lhS ~/Desktop | head -10                                      → biggest files on Desktop
-      ls -lt ~/Downloads | head -5                                      → newest files in Downloads
-      du -sh ~/* 2>/dev/null | sort -rh | head -10                      → what's taking up space in home
+    File commands (copy exactly):
+      ls -lhS ~/Desktop | head -10                   → biggest files on Desktop
+      ls -lhS ~/Downloads | head -10                 → biggest/largest files in Downloads
+      ls -lt ~/Downloads | head -5                   → newest files in Downloads
+      du -sh ~/* 2>/dev/null | sort -rh | head -10   → home folder sizes, what takes up space
       find ~/Desktop ~/Downloads ~/Documents -maxdepth 1 -mtime 0 -type f 2>/dev/null → files modified today
-      find ~/ -maxdepth 4 -name "filename" 2>/dev/null                  → find a file by name
-      grep -ril "text" ~/Documents 2>/dev/null | head -20               → files containing specific text
+      find ~/ -maxdepth 4 -name "filename" 2>/dev/null → find a file called filename
+      grep -ril "text" ~/Documents 2>/dev/null | head -20 → files containing text
       defaults read "/Applications/App.app/Contents/Info" CFBundleShortVersionString 2>/dev/null → app version
 
     Do NOT use rm, mv, cp, sudo, or any command that modifies files.
-    Answer directly (no tool) for: weather, outside temperature, news, stock prices,
-    general knowledge, unit conversion, math, or anything not needing live data.
-    Answer in 1-3 sentences. Do not mix a TOOL or REMIND line with other text.
+    Answer directly (no tool) for: weather, news, stock prices, general knowledge, math.
+    Output ONE line only. Do not mix TOOL/REMIND with other text.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
     let r1 = callLlama(prompt: p1, maxTokens: 60, stop: stops).trimmed
