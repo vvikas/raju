@@ -354,11 +354,13 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       uptime                                           → uptime and load
 
     File commands (use ~/ for home directory):
-      ls -lhS ~/Desktop | head -10                     → biggest files on Desktop
-      ls -lhS ~/Downloads | head -10                   → biggest files in Downloads
-      du -sh ~/Desktop/* | sort -rh | head -5          → folder sizes on Desktop
-      find ~/Desktop -maxdepth 1 -name "*.ext"         → find files by extension
-      find ~/ -maxdepth 4 -name "filename" 2>/dev/null → find a file by name
+      ls -lhS ~/Desktop | head -10                          → biggest files on Desktop
+      ls -lhS ~/Downloads | head -10                        → biggest files in Downloads
+      du -sh ~/Desktop/* | sort -rh | head -5               → folder sizes on Desktop
+      find ~/Desktop -maxdepth 1 -name "*.ext"              → find files by extension
+      find ~/ -maxdepth 4 -name "filename" 2>/dev/null      → find a file by name
+      grep -ril "text" ~/Documents 2>/dev/null | head -20   → files containing text (Documents)
+      grep -ril "text" ~/Desktop 2>/dev/null | head -20     → files containing text (Desktop)
 
     Do NOT use rm, mv, cp, sudo, or any command that modifies files.
     Answer directly (no tool) for: weather, outside temperature, news,
@@ -375,7 +377,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Detect those so we don't accidentally speak a bash one-liner aloud.
     let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
                           "netstat", "iostat", "sw_vers", "sysctl ", "diskutil",
-                          "ls ", "du ", "find ", "locate "]
+                          "ls ", "du ", "find ", "locate ", "grep "]
     let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
                       || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
 
@@ -417,12 +419,22 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
         }
     }
 
-    // Guarantee at least 5 non-empty lines reach the LLM; trim to 10 max to save context.
-    let topLines = toolOut.components(separatedBy: "\n")
-        .filter { !$0.trimmed.isEmpty }
-        .prefix(10)
-        .joined(separator: "\n")
+    // Guarantee at least 5 non-empty lines reach the LLM; trim to 20 max to save context.
+    let allLines = toolOut.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
+    let topLines = allLines.prefix(20).joined(separator: "\n")
     let dataForLLM = topLines.isEmpty ? "(command returned no output)" : topLines
+
+    // If the result is a list (>4 lines), copy the full output to clipboard so the user
+    // can paste it. The LLM is told about this so it can mention it in its reply.
+    var clipboardNote = ""
+    if allLines.count > 4 {
+        DispatchQueue.main.async {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(toolOut, forType: .string)
+        }
+        clipboardNote = "The full list (\(allLines.count) items) has been copied to the clipboard.\n"
+        log("📋 Copied \(allLines.count)-line result to clipboard")
+    }
 
     // Tell the LLM how the ps data is sorted so it doesn't confuse CPU% with RAM%
     let sortNote: String
@@ -441,7 +453,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     Use ONLY the data below — do not invent numbers or process names.
     Never refuse. If the data does not answer the question, say: "I don't have that data right now."
     """
-    let usr2 = "Live system data (from `\(cmd)`):\n\(sortLabel)\(dataForLLM)\n\nQuestion: \(query)"
+    let usr2 = "Live data (from `\(cmd)`):\n\(clipboardNote)\(sortLabel)\(dataForLLM)\n\nQuestion: \(query)"
     let p2 = buildPrompt(system: sys2, user: usr2, format: format)
     let r2 = callLlama(prompt: p2, maxTokens: 150, stop: stops).trimmed
 
