@@ -371,7 +371,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
     Pick a command number and output: TOOL: <number>
     If the command needs a value, add it: TOOL: <number> <value>
-    For reminders: REMIND: <seconds> <what to say>
+    For reminders: REMIND: <number> <seconds|minutes|hours> <message>
     For general knowledge: just answer directly in 1-2 sentences.
 
     Commands:
@@ -383,6 +383,8 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       "is Safari running?" → TOOL: 5 Safari
       "largest file in downloads?" → TOOL: 12
       "find notes.txt" → TOOL: 16 notes.txt
+      "remind me in 5 minutes" → REMIND: 5 minutes time to check
+      "set a 30 second timer" → REMIND: 30 seconds done
       "capital of France?" → Paris is the capital of France.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
@@ -1036,20 +1038,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.state = .speaking
             let voicePath = VOICES[self.currentVoiceIndex].path
 
-            // Handle reminder requests — LLM returns "REMIND: <secs> <message>"
+            // Handle reminder requests — LLM returns "REMIND: <number> <unit> <message>"
+            // Unit may be seconds/minutes/hours (or absent, meaning seconds).
             if self.lastReply.hasPrefix("REMIND:") {
-                let raw   = String(self.lastReply.dropFirst("REMIND:".count)).trimmed
-                let parts = raw.split(separator: " ", maxSplits: 1)
-                let secs  = max(5.0, Double(String(parts.first ?? "60")) ?? 60)
-                let msg   = parts.count > 1 ? String(parts[1]).trimmed : "Time's up!"
+                let raw    = String(self.lastReply.dropFirst("REMIND:".count)).trimmed
+                let tokens = raw.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+                var secs   = 60.0
+                var msgIdx = 0
+                if let num = tokens.first.flatMap({ Double($0) }) {
+                    secs   = num
+                    msgIdx = 1
+                    if tokens.count > 1 {
+                        switch tokens[1].lowercased() {
+                        case let u where u.hasPrefix("min"):  secs = num * 60;   msgIdx = 2
+                        case let u where u.hasPrefix("hour"): secs = num * 3600; msgIdx = 2
+                        case let u where u.hasPrefix("sec"):  secs = num;        msgIdx = 2
+                        default: break
+                        }
+                    }
+                }
+                secs = max(5.0, secs)
+                let msgText = tokens.dropFirst(msgIdx).joined(separator: " ").trimmed
+                let message = msgText.isEmpty ? "Time's up!" : msgText
                 let secsInt = Int(secs)
-                let timeDesc = secsInt >= 60
-                    ? "\(secsInt / 60) minute\(secsInt / 60 == 1 ? "" : "s")"
-                    : "\(secsInt) second\(secsInt == 1 ? "" : "s")"
-                log("⏰ Reminder set: \(secsInt)s — \(msg)")
+                let timeDesc: String
+                if secsInt >= 3600 {
+                    let h = secsInt / 3600; timeDesc = "\(h) hour\(h == 1 ? "" : "s")"
+                } else if secsInt >= 60 {
+                    let m = secsInt / 60;   timeDesc = "\(m) minute\(m == 1 ? "" : "s")"
+                } else {
+                    timeDesc = "\(secsInt) second\(secsInt == 1 ? "" : "s")"
+                }
+                log("⏰ Reminder set: \(secsInt)s — \(message)")
                 DispatchQueue.global().asyncAfter(deadline: .now() + secs) {
-                    log("⏰ Firing reminder: \(msg)")
-                    speak(msg, modelPath: voicePath)
+                    log("⏰ Firing reminder: \(message)")
+                    speak(message, modelPath: voicePath)
                 }
                 self.lastReply = "Okay, I'll remind you in \(timeDesc)."
             }
