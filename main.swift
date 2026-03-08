@@ -966,13 +966,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     func downloadFile(from urlString: String, to dest: String) -> Bool {
         guard let url = URL(string: urlString) else { return false }
-        var req = URLRequest(url: url, timeoutInterval: 300)
+        var req = URLRequest(url: url, timeoutInterval: 600)
         req.httpMethod = "GET"
         var success = false
         let sem = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            if let data = data, (resp as? HTTPURLResponse)?.statusCode == 200 {
-                success = (try? data.write(to: URL(fileURLWithPath: dest))) != nil
+        // Use downloadTask to stream to disk (not RAM) — models can be 1GB+
+        URLSession.shared.downloadTask(with: req) { tempURL, resp, _ in
+            if let tempURL = tempURL, (resp as? HTTPURLResponse)?.statusCode == 200 {
+                try? FileManager.default.removeItem(atPath: dest)
+                success = ((try? FileManager.default.moveItem(at: tempURL,
+                    to: URL(fileURLWithPath: dest))) != nil)
             }
             sem.signal()
         }.resume()
