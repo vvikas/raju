@@ -302,12 +302,12 @@ func stopTokens(for format: PromptFormat) -> [String] {
 }
 
 // ── Raw llama-server call — send prompt, get completion ───────────────────────
-func callLlama(prompt: String, maxTokens: Int = 200, stop: [String] = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]) -> String {
+func callLlama(prompt: String, maxTokens: Int = 200, temperature: Double = 0.7, stop: [String] = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]) -> String {
     guard let url = URL(string: "\(LLAMA_URL)/completion") else { return "" }
     let body: [String: Any] = [
         "prompt": prompt,
         "n_predict": maxTokens,
-        "temperature": 0.7,
+        "temperature": temperature,
         "repeat_penalty": 1.1,
         "stop": stop
     ]
@@ -331,6 +331,48 @@ func callLlama(prompt: String, maxTokens: Int = 200, stop: [String] = ["<|im_end
     return result
 }
 
+// ── Numbered command table — LLM outputs a number, Swift maps to command ──────
+// Commands with "?" placeholders need the LLM to supply a value after the number.
+let TOOL_COMMANDS: [(cmd: String, desc: String, placeholder: String?)] = [
+    ("pmset -g batt",                                                         "battery, charging, power, time remaining",       nil),        // 1
+    ("df -h /",                                                               "disk space, storage, free space",                nil),        // 2
+    ("ps -Axo pid,args,%cpu,%mem -r | head -8",                               "CPU usage, top processes, what uses CPU",        nil),        // 3
+    ("ps -Axo pid,args,%cpu,%mem -m | head -8",                               "RAM/memory usage, what eats memory",             nil),        // 4
+    ("ps -ax | grep -i \"?\" | grep -v grep | wc -l",                        "is app running",                                 "APP"),      // 5
+    ("ifconfig en0",                                                          "IP address, local IP",                           nil),        // 6
+    ("networksetup -getairportnetwork en0",                                   "WiFi name, network name",                        nil),        // 7
+    ("uptime",                                                                "uptime, how long Mac has been on",               nil),        // 8
+    ("pbpaste | head -10",                                                    "clipboard contents, what did I copy",            nil),        // 9
+    ("vm_stat",                                                               "virtual memory pages",                           nil),        // 10
+    ("ls -lhS ~/Desktop | head -10",                                         "biggest/largest files on Desktop",                nil),        // 11
+    ("ls -lhS ~/Downloads | head -10",                                       "biggest/largest files in Downloads",              nil),        // 12
+    ("ls -lt ~/Downloads | head -5",                                         "newest/recent files in Downloads",                nil),        // 13
+    ("du -sh ~/* 2>/dev/null | sort -rh | head -10",                         "home folder sizes, what takes space",             nil),        // 14
+    ("find ~/Desktop ~/Downloads ~/Documents -maxdepth 1 -mtime 0 -type f 2>/dev/null", "files modified today",                nil),        // 15
+    ("find ~/ -maxdepth 4 -name \"?\" 2>/dev/null",                          "find file by name",                               "FILENAME"), // 16
+    ("grep -ril \"?\" ~/Documents 2>/dev/null | head -20",                   "search file contents, files containing text",     "TEXT"),     // 17
+    ("defaults read \"/Applications/?.app/Contents/Info\" CFBundleShortVersionString 2>/dev/null", "app version",               "APP"),      // 18
+]
+
+func buildToolList() -> String {
+    var s = ""
+    for (i, t) in TOOL_COMMANDS.enumerated() {
+        let num = String(format: "%2d", i + 1)
+        let placeholder = t.placeholder != nil ? " <\(t.placeholder!)>" : ""
+        s += "  \(num)\(placeholder)  → \(t.desc)\n"
+    }
+    return s
+}
+
+func resolveToolCommand(number: Int, value: String?) -> String {
+    guard number >= 1 && number <= TOOL_COMMANDS.count else { return "" }
+    var cmd = TOOL_COMMANDS[number - 1].cmd
+    if let val = value, !val.isEmpty {
+        cmd = cmd.replacingOccurrences(of: "?", with: val)
+    }
+    return cmd
+}
+
 // ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
 func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let timeFmt = DateFormatter()
@@ -338,69 +380,69 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let now = timeFmt.string(from: Date())
     let stops = stopTokens(for: format)
 
-    // Turn 1 — ask LLM: answer directly OR emit exactly one TOOL/REMIND line
+    let toolList = buildToolList()
+
+    // Turn 1 — ask LLM: pick a command number OR answer directly
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
-    Use a tool ONLY when the question needs live system or file data. Output ONLY one line:
-    TOOL: <bash command>
-    For reminders output ONLY: REMIND: <seconds> <what to say>
-    CRITICAL: Use ONLY the exact commands listed below. Do NOT add awk, sed, bc, xargs, or extra pipes beyond what is shown here.
+    Pick a command number and output: TOOL: <number>
+    If the command needs a value, add it: TOOL: <number> <value>
+    For reminders: REMIND: <seconds> <what to say>
+    For general knowledge: just answer directly in 1-2 sentences.
 
-    System commands (copy exactly, replace AppName/filename/text with actual values):
-      ps -Axo pid,args,%cpu,%mem -r | head -8        → CPU usage, what is using the most CPU
-      ps -Axo pid,args,%cpu,%mem -m | head -8        → RAM/memory usage, what is eating my memory
-      ps -ax | grep -i "AppName" | grep -v grep | wc -l → is AppName running
-      df -h /                                        → disk space, free storage, how much space
-      vm_stat                                        → virtual memory stats
-      pmset -g batt                                  → battery level, battery percentage, how long until battery dies, charging status, time remaining on battery
-      ifconfig en0                                   → my IP address, local IP
-      networksetup -getairportnetwork en0            → WiFi name, what network am I on
-      uptime                                         → uptime, how long has Mac been on
-      pbpaste | head -10                             → clipboard, what did I copy
-
-    File commands (copy exactly):
-      ls -lhS ~/Desktop | head -10                   → biggest files on Desktop
-      ls -lhS ~/Downloads | head -10                 → biggest/largest files in Downloads
-      ls -lt ~/Downloads | head -5                   → newest files in Downloads
-      du -sh ~/* 2>/dev/null | sort -rh | head -10   → home folder sizes, what takes up space
-      find ~/Desktop ~/Downloads ~/Documents -maxdepth 1 -mtime 0 -type f 2>/dev/null → files modified today
-      find ~/ -maxdepth 4 -name "filename" 2>/dev/null → find a file called filename
-      grep -ril "text" ~/Documents 2>/dev/null | head -20 → files containing text
-      defaults read "/Applications/App.app/Contents/Info" CFBundleShortVersionString 2>/dev/null → app version
-
-    Do NOT use rm, mv, cp, sudo, or any command that modifies files.
-    Answer directly (no tool) for: weather, news, stock prices, general knowledge, math.
-    Output ONE line only. Do not mix TOOL/REMIND with other text.
+    Commands:
+    \(toolList)
+    Examples:
+      "battery left?" → TOOL: 1
+      "disk space?" → TOOL: 2
+      "what's using CPU?" → TOOL: 3
+      "is Safari running?" → TOOL: 5 Safari
+      "largest file in downloads?" → TOOL: 12
+      "find notes.txt" → TOOL: 16 notes.txt
+      "capital of France?" → Paris is the capital of France.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
-    let r1 = callLlama(prompt: p1, maxTokens: 60, stop: stops).trimmed
+    let r1 = callLlama(prompt: p1, maxTokens: 40, temperature: 0.1, stop: stops).trimmed
 
-    // Check only the first line — ignore any extra text the model may have generated
+    // Check only the first line
     let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
+    log("📝 Turn 1 raw: \(firstLine)")
 
-    // Small models sometimes forget the TOOL: prefix and output a raw shell command.
-    // Detect those so we don't accidentally speak a bash one-liner aloud.
-    let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
-                          "netstat", "iostat", "sw_vers", "sysctl ", "diskutil",
-                          "ls ", "du ", "find ", "locate ", "grep ", "pbpaste",
-                          "networksetup", "defaults ", "mdls ", "mdfind ", "lsof "]
-    let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
-                      || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
-
-    // Pass reminders straight through — handled by the caller (AppDelegate.stopRecording)
+    // Pass reminders straight through
     if firstLine.hasPrefix("REMIND:") { return firstLine }
 
-    guard firstLine.hasPrefix("TOOL:") || looksLikeShell else { return r1 }
-
-    // Strip TOOL: prefix if present; otherwise the line itself is the command
-    var cmd: String
+    // Parse TOOL: <number> [value]
+    var cmd = ""
     if firstLine.hasPrefix("TOOL:") {
-        cmd = String(firstLine.dropFirst(5)).trimmed
-    } else {
-        log("⚠️ LLM skipped TOOL: prefix — treating as tool call: \(firstLine)")
-        cmd = firstLine
+        let afterTool = String(firstLine.dropFirst(5)).trimmed
+        let parts = afterTool.split(separator: " ", maxSplits: 1)
+        if let numStr = parts.first, let num = Int(numStr) {
+            let value = parts.count > 1 ? String(parts[1]).trimmed : nil
+            cmd = resolveToolCommand(number: num, value: value)
+            log("🔢 Resolved TOOL \(num) → \(cmd)")
+        } else {
+            // LLM output the full command instead of a number — use it directly
+            cmd = afterTool
+            log("⚠️ LLM output full command instead of number: \(cmd)")
+        }
     }
-    guard !cmd.isEmpty else { return callLlama(prompt: p1, maxTokens: 200).trimmed }
+
+    // Fallback: detect raw shell commands (no TOOL: prefix)
+    if cmd.isEmpty {
+        let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
+                              "netstat", "iostat", "sw_vers", "sysctl ", "diskutil",
+                              "ls ", "du ", "find ", "locate ", "grep ", "pbpaste",
+                              "networksetup", "defaults ", "mdls ", "mdfind ", "lsof "]
+        let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
+                          || (firstLine.contains(" | ") && !firstLine.hasSuffix("?"))
+        if looksLikeShell {
+            log("⚠️ LLM skipped TOOL: prefix — treating as tool call: \(firstLine)")
+            cmd = firstLine
+        }
+    }
+
+    // If no tool detected, return the direct answer
+    guard !cmd.isEmpty else { return r1 }
 
     log("🔧 Tool call: \(cmd)")
     var toolOut = runTool(cmd)
@@ -467,7 +509,9 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let r2 = callLlama(prompt: p2, maxTokens: 150, stop: stops).trimmed
 
     // Safety net: never speak a TOOL: line or a raw shell command
-    let r2LooksLikeShell = knownShellCmds.contains(where: { r2.hasPrefix($0) })
+    let shellPrefixes = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
+                         "ls ", "du ", "find ", "grep ", "pbpaste", "networksetup", "defaults "]
+    let r2LooksLikeShell = shellPrefixes.contains(where: { r2.hasPrefix($0) })
                         || (r2.contains(" | ") && r2.count < 200 && !r2.contains("?"))
     if r2.hasPrefix("TOOL:") || r2LooksLikeShell {
         let rest = r2.components(separatedBy: "\n").dropFirst().joined(separator: "\n").trimmed
