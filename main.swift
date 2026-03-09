@@ -380,6 +380,28 @@ func reformatOutput(_ raw: String, cmd: String) -> String {
     return raw   // all other commands: pass through unchanged
 }
 
+// ── find command helpers — extract keyword + folder to rebuild safer fallback ──
+/// Returns the raw keyword from a -name/-iname pattern, wildcards/dots stripped.
+/// "find ~/Desktop -name \"*.office*\"" → "office"
+func extractFindKeyword(_ cmd: String) -> String? {
+    let pat = #"-i?name\s+"([^"]+)""#
+    guard let re = try? NSRegularExpression(pattern: pat),
+          let m  = re.firstMatch(in: cmd, range: NSRange(cmd.startIndex..., in: cmd)),
+          let r  = Range(m.range(at: 1), in: cmd) else { return nil }
+    var kw = String(cmd[r])
+    kw = kw.trimmingCharacters(in: CharacterSet(charactersIn: "*.? "))
+    return kw.isEmpty ? nil : kw
+}
+
+/// Returns the folder path from a find command (the first argument after "find").
+/// "find ~/Desktop -iname ..." → "~/Desktop"
+func extractFindFolder(_ cmd: String) -> String {
+    let parts = cmd.split(separator: " ", omittingEmptySubsequences: true)
+    guard parts.count >= 2 else { return "~/" }
+    let folder = String(parts[1])
+    return (folder.hasPrefix("~") || folder.hasPrefix("/")) ? folder : "~/"
+}
+
 // ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
 func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let timeFmt = DateFormatter()
@@ -403,7 +425,9 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       "biggest file on desktop?" → CMD: ls -lhS ~/Desktop | head -10
       "biggest file in downloads?" → CMD: ls -lhS ~/Downloads | head -10
       "newest file in downloads?" → CMD: ls -lt ~/Downloads | head -5
-      "find notes.txt" → CMD: find ~/ -maxdepth 4 -name notes.txt 2>/dev/null
+      "find file called office on desktop?" → CMD: find ~/Desktop -iname "*office*" 2>/dev/null
+      "find notes.txt on desktop?" → CMD: find ~/Desktop -iname "*notes.txt*" 2>/dev/null
+      "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -20
       "remind me in 5 minutes" → REMIND: 5 minutes time to check
       "set a 30 second timer" → REMIND: 30 seconds done
       "capital of France?" → Paris is the capital of France.
@@ -460,6 +484,14 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
             // Preserve the sort flag the LLM picked; fall back to -r if none present
             let sortFlag = cmd.contains("-m") ? "-m" : "-r"
             fallback = "ps -Axo pid,args,%cpu,%mem \(sortFlag) | head -8"
+        } else if cmd.hasPrefix("find ") || cmd.contains(" find ") {
+            // Rebuild with case-insensitive wildcard to fix "*.X*" style mistakes
+            if let kw = extractFindKeyword(cmd) {
+                let folder = extractFindFolder(cmd)
+                fallback = "find \(folder) -iname \"*\(kw)*\" 2>/dev/null"
+            } else {
+                fallback = cmd  // keyword not parseable; nothing to improve
+            }
         } else {
             fallback = cmd.components(separatedBy: "|").first?.trimmed ?? cmd
         }
@@ -477,7 +509,9 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Trim to 20 non-empty lines max to save context.
     let allLines = formatted.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
     let topLines = allLines.prefix(20).joined(separator: "\n")
-    let dataForLLM = topLines.isEmpty ? "(command returned no output)" : topLines
+    let dataForLLM = topLines.isEmpty
+        ? "The command ran but found no matching results. Tell the user nothing was found."
+        : topLines
 
     // If the result is a list (>4 lines), copy the raw output to clipboard.
     var clipboardNote = ""
