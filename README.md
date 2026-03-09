@@ -1,21 +1,36 @@
-# Raju — Local Voice Assistant for macOS
+# Raju — Your Private AI Voice Assistant for macOS
 
-> **Hold** the menubar icon to speak. **Release** to get a reply.
-> 100% on-device — no cloud, no API keys, no internet required after install.
+> **Siri went to the cloud. Raju stayed home.**
+
+Hold the menubar icon → speak → get a real answer. All on your machine. All private. No API keys, no subscriptions, no internet required after install.
 
 ![Raju menu](assets/screenshot.png)
 
 ---
 
-## What it does
+## What makes it different
 
-Raju is a fully local voice assistant that lives in your macOS menubar. Ask it anything — system stats, battery, disk space, IP address, time — and it answers out loud in a natural voice.
+Siri is smart, but it phones home for everything. Raju runs a local LLM, a local speech-to-text engine, and a local neural voice synthesizer — entirely on your Mac. It doesn't just look things up, it actually runs bash commands against your live system to give you real answers.
+
+| | Siri | Raju |
+|---|---|---|
+| Works offline | ❌ | ✅ |
+| Privacy | Logs to Apple | Zero telemetry |
+| Checks your real system | Limited | Full read-only shell access |
+| Voices | Fixed | 6 neural voices, swap anytime |
+| Models | Fixed | 4 LLMs, swap on the fly |
+| Open source | ❌ | ✅ |
+| Cost | Apple subscription | Free forever |
+
+---
+
+## How it works
 
 ```
-Hold icon  →  rec        (mic → WAV)
-Release    →  whisper-server  (WAV → text)
-              llama-server    (text + live system data → reply)
-              Piper TTS       (reply → speech)  →  speaker
+Hold icon  →  rec              (mic → WAV)
+Release    →  whisper-server   (WAV → text, runs locally)
+              llama-server     (text + live system data → reply)
+              Piper TTS        (reply → speech, runs locally)  →  speaker
 ```
 
 All inference runs on persistent local HTTP servers — models stay loaded in RAM so each query after warm-up is fast.
@@ -25,11 +40,11 @@ All inference runs on persistent local HTTP servers — models stay loaded in RA
 ## Features
 
 - **Push-to-talk** — hold to record, release to respond
-- **Live system queries** — CPU, RAM, disk, battery, network via a tool-use ReAct loop
-- **4 LLMs built-in** — switch models on the fly, server restarts automatically
+- **Live system queries** — CPU, RAM, disk, battery, network via a two-turn ReAct loop
+- **4 LLMs** — switch models on the fly from the menu; new model downloads in-app (~1 GB)
 - **6 Piper neural voices** — auto-downloads on first select (~60 MB each)
 - **Stop / Start servers** — toggle LLM or Whisper from the menu without quitting
-- **Live log** — streams in Terminal with `tail -f`
+- **Live log** — streams in Terminal with `tail -f ~/Raju/raju.log`
 - **Launch at Login** — one-click LaunchAgent toggle
 - **Fully private** — zero network calls during operation
 
@@ -50,21 +65,23 @@ The installer handles everything end-to-end:
 |------|-------------|
 | Homebrew | Installs if missing |
 | sox | `brew install sox` — mic recording |
-| llama.cpp | Clone + build from source |
-| whisper.cpp | Clone + build from source |
+| llama.cpp | Clone + build from source (with Metal GPU acceleration) |
+| whisper.cpp | Clone + build from source (with Metal GPU acceleration) |
 | Whisper model | Downloads `ggml-small.bin` (~466 MB) |
-| LLM models | Downloads Qwen2 1.5B, DeepSeek-Coder 1.3B, TinyLlama 1.1B |
+| LLM model | Downloads Qwen2 1.5B (~940 MB) as the default |
 | Piper TTS | `pip3 install piper-tts` + Lessac voice (~60 MB) |
-| Compile | Builds the `Raju` binary |
+| Compile | Builds `Raju.app` in `~/Applications` |
 
 > First build takes 20–30 minutes (compiling llama.cpp + whisper.cpp from source).
+>
+> Additional models (Qwen2.5-Coder, SmolLM2, Phi-3.5 Mini) download on demand via the in-app menu — no need to fetch them upfront.
 
 ---
 
 ## Run
 
 ```bash
-~/Raju/Raju
+open ~/Applications/Raju.app
 ```
 
 The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up — **⚡** appears next to both LLM and Whisper when ready.
@@ -89,14 +106,13 @@ The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up
 | "What's using the most CPU?" | Runs `ps`, speaks top processes |
 | "What's eating my RAM?" | Runs `ps -m`, speaks top memory users |
 | "How much disk space do I have?" | Runs `df -h` |
-| "What's my battery level?" / "How long until my battery dies?" | Runs `pmset -g batt` |
+| "What's my battery level?" | Runs `pmset -g batt` |
 | "How long has my Mac been on?" | Runs `uptime` |
 
 **Apps & Processes**
 | Query | What Raju does |
 |-------|---------------|
 | "Is Spotify running?" | Checks running processes by name |
-| "What version of Chrome do I have?" | Reads app bundle info |
 
 **Network**
 | Query | What Raju does |
@@ -112,53 +128,55 @@ The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up
 | "What's taking up space in my home folder?" | Runs `du -sh ~/*` |
 | "Find files I modified today" | Runs `find` with `-mtime 0` |
 | "Find a file called notes.txt" | Runs `find ~/` by name |
-| "Find files on my Desktop containing 'budget'" | Runs `grep -ril` — list copied to clipboard |
+| "Find files containing 'budget'" | Runs `grep -ril` — full list copied to clipboard |
 
 **Clipboard**
 | Query | What Raju does |
 |-------|---------------|
-| "What's in my clipboard?" | Runs `pbpaste`, speaks the content |
+| "What's in my clipboard?" | Reads clipboard via `pbpaste` |
 
 **Reminders**
 | Query | What Raju does |
 |-------|---------------|
 | "Remind me in 10 minutes to check the oven" | Sets a timer — speaks reminder aloud when it fires |
-| "Remind me in 30 seconds to stand up" | Same, any duration |
+| "Remind me in 2 hours to take a break" | Same, any duration in seconds / minutes / hours |
 
-**General Knowledge (no tool needed)**
+**General Knowledge**
 | Query | What Raju does |
 |-------|---------------|
 | "What time is it?" / "What day is today?" | Answers directly from system time |
 | "How many MB is 2.3 GB?" | LLM computes directly |
 | "What's the capital of France?" | LLM answers directly |
 
-> **Tip:** Long results (file lists, grep matches) are automatically copied to your clipboard so you can paste them anywhere.
+> **Tip:** Long results (file lists, process tables) are automatically copied to your clipboard so you can paste them anywhere.
 
 ---
 
 ## Models
 
-Switch anytime via right-click → 🧠 Model. The old server is killed and the new one starts automatically.
+Switch anytime via right-click → 🧠 Model. The old server stops and the new one starts automatically. Models marked ↓ download in-app on first select.
 
-| Model | Size | Best for | Template |
+| Model | Size | Best for | Download |
 |-------|------|----------|----------|
-| Qwen2 1.5B | 940 MB | General questions (default) | ChatML |
-| DeepSeek-Coder 1.3B | 833 MB | Code & technical questions | ChatML |
-| TinyLlama 1.1B | 638 MB | Fastest responses | ChatML |
-| Phi-3.5 Mini 3.8B | 2.2 GB | Best reasoning quality | Phi-3 |
+| Qwen2 1.5B | ~940 MB | General questions — default, pre-installed | install.sh |
+| Qwen2.5-Coder 1.5B | ~950 MB | Code, scripting, technical questions | In-app ↓ |
+| SmolLM2 1.7B | ~1.1 GB | Fast, capable all-rounder | In-app ↓ |
+| Phi-3.5 Mini 3.8B | ~2.2 GB | Best reasoning quality | In-app ↓ |
 
 ---
 
 ## Voices
 
-| Voice | Accent |
-|-------|--------|
-| Lessac (US Female) | Default — included |
-| Ryan (US Male) | Auto-downloads on select |
-| Amy (US Female) | Auto-downloads on select |
-| Joe (US Male) | Auto-downloads on select |
-| Jenny (GB Female) | Auto-downloads on select |
-| Alan (GB Male) | Auto-downloads on select |
+Switch anytime via right-click → 🗣 Voice. Voices auto-download on first select (~60 MB each).
+
+| Voice | Accent | Download |
+|-------|--------|----------|
+| Lessac (US Female) | Default | install.sh |
+| Ryan (US Male) | American | In-app ↓ |
+| Amy (US Female) | American | In-app ↓ |
+| Joe (US Male) | American | In-app ↓ |
+| Jenny (GB Female) | British | In-app ↓ |
+| Alan (GB Male) | British | In-app ↓ |
 
 Falls back to macOS `say` if Piper is not installed.
 
@@ -168,17 +186,24 @@ Falls back to macOS `say` if Piper is not installed.
 
 For system queries, Raju uses a two-turn ReAct loop:
 
-**Turn 1** — LLM decides whether to answer directly or request a command:
+**Turn 1** — LLM decides whether to answer directly or generate a shell command:
 ```
-TOOL: ps -Axo pid,args,%cpu,%mem -r | head -8
-```
-
-**Turn 2** — Raju runs the command, feeds the output back, LLM gives a spoken answer:
-```
-Safari is using the most CPU at 45%, followed by Spotlight at 12%.
+CMD: ps -Axo pid,args,%cpu,%mem -r | head -8
 ```
 
-Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, etc.) are blocked. The LLM only gets read-only tools.
+**Turn 2** — Raju runs the command, reformats the output into labeled lines, feeds it back, and the LLM gives a spoken answer:
+```
+llama-server is using the most CPU at 66%, followed by Claude Helper at 28%.
+```
+
+The output reformatter converts raw columnar text (hard for small LLMs to parse) into labeled key=value pairs before Turn 2:
+```
+Processes sorted by CPU (highest first):
+  pid=62840, name=llama-server, cpu=66.6%, ram=6.5%
+  pid=42584, name=Claude Helper, cpu=28.7%, ram=6.9%
+```
+
+Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, `curl`, etc.) are blocked. The LLM only gets read-only shell access.
 
 ---
 
@@ -186,8 +211,8 @@ Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, etc.) a
 
 - macOS 12+
 - Xcode Command Line Tools (`xcode-select --install`)
-- ~6 GB free disk (models + binaries)
-- ~2 GB RAM headroom (4 GB for Phi-3.5 Mini)
+- ~6 GB free disk (models + compiled binaries)
+- ~2 GB RAM headroom (4 GB recommended for Phi-3.5 Mini)
 
 ---
 
@@ -195,7 +220,8 @@ Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, etc.) a
 
 ```
 ~/Raju/                      ← this repo
-├── main.swift               ← entire app (~940 lines)
+├── main.swift               ← entire app (~1100 lines)
+├── Models.swift             ← LLM + voice config (edit here to add models)
 ├── install.sh               ← one-shot dependency installer
 ├── assets/
 │   └── screenshot.png
