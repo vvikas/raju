@@ -515,6 +515,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -20
       "find file on desktop containing word language?" → CMD: grep -ril "language" ~/Desktop 2>/dev/null | head -20
       "find file in downloads containing word apple?" → CMD: grep -ril "apple" ~/Downloads 2>/dev/null | head -20
+      # grep flags: -r=recursive -i=case-insensitive -l=list filenames only (NOT content lines). Always use -ril together.
       "biggest video on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.avi" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
       "biggest image on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.jpg" -o -iname "*.png" -o -iname "*.heic" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
       "remind me in 5 minutes" → REMIND: 5 minutes time to check
