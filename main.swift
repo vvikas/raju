@@ -474,6 +474,10 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     For reminders: REMIND: <number> <seconds|minutes|hours> <message>
     For general knowledge: just answer directly in 1-2 sentences.
 
+    File search rules:
+      - File by NAME (called, named): find <folder> -iname "*keyword*" 2>/dev/null
+      - File by CONTENT (contains word, has text inside): grep -ril "keyword" <folder> 2>/dev/null | head -20
+
     Examples:
       "battery left?" → CMD: pmset -g batt
       "disk space?" → CMD: df -h /
