@@ -291,47 +291,6 @@ func callLlama(prompt: String, maxTokens: Int = 200, temperature: Double = 0.7, 
     return result
 }
 
-// ── Numbered command table — LLM outputs a number, Swift maps to command ──────
-// Commands with "?" placeholders need the LLM to supply a value after the number.
-let TOOL_COMMANDS: [(cmd: String, desc: String, placeholder: String?)] = [
-    ("pmset -g batt",                                                         "battery, charging, power, time remaining",       nil),        // 1
-    ("df -h /",                                                               "disk space, storage, free space",                nil),        // 2
-    ("ps -Axo pid,args,%cpu,%mem -r | head -8",                               "CPU usage, top processes, what uses CPU",        nil),        // 3
-    ("ps -Axo pid,args,%cpu,%mem -m | head -8",                               "RAM/memory usage, what eats memory",             nil),        // 4
-    ("ps -ax | grep -i \"?\" | grep -v grep | wc -l",                        "is app running",                                 "APP"),      // 5
-    ("ifconfig en0",                                                          "IP address, local IP",                           nil),        // 6
-    ("networksetup -getairportnetwork en0",                                   "WiFi name, network name",                        nil),        // 7
-    ("uptime",                                                                "uptime, how long Mac has been on",               nil),        // 8
-    ("pbpaste | head -10",                                                    "clipboard contents, what did I copy",            nil),        // 9
-    ("vm_stat",                                                               "virtual memory pages",                           nil),        // 10
-    ("ls -lhS ~/Desktop | head -10",                                         "biggest/largest files on Desktop",                nil),        // 11
-    ("ls -lhS ~/Downloads | head -10",                                       "biggest/largest files in Downloads",              nil),        // 12
-    ("ls -lt ~/Downloads | head -5",                                         "newest/recent files in Downloads",                nil),        // 13
-    ("du -sh ~/* 2>/dev/null | sort -rh | head -10",                         "home folder sizes, what takes space",             nil),        // 14
-    ("find ~/Desktop ~/Downloads ~/Documents -maxdepth 1 -mtime 0 -type f 2>/dev/null", "files modified today",                nil),        // 15
-    ("find ~/ -maxdepth 4 -name \"?\" 2>/dev/null",                          "find file by name",                               "FILENAME"), // 16
-    ("grep -ril \"?\" ~/Documents 2>/dev/null | head -20",                   "search file contents, files containing text",     "TEXT"),     // 17
-    ("defaults read \"/Applications/?.app/Contents/Info\" CFBundleShortVersionString 2>/dev/null", "app version",               "APP"),      // 18
-]
-
-func buildToolList() -> String {
-    var s = ""
-    for (i, t) in TOOL_COMMANDS.enumerated() {
-        let num = String(format: "%2d", i + 1)
-        let placeholder = t.placeholder != nil ? " <\(t.placeholder!)>" : ""
-        s += "  \(num)\(placeholder)  → \(t.desc)\n"
-    }
-    return s
-}
-
-func resolveToolCommand(number: Int, value: String?) -> String {
-    guard number >= 1 && number <= TOOL_COMMANDS.count else { return "" }
-    var cmd = TOOL_COMMANDS[number - 1].cmd
-    if let val = value, !val.isEmpty {
-        cmd = cmd.replacingOccurrences(of: "?", with: val)
-    }
-    return cmd
-}
 
 // ── Truncation detection — retry with bigger buffer if output was cut mid-token ──
 func looksLikeTruncated(_ s: String) -> Bool {
@@ -357,6 +316,70 @@ func cleanLLMOutput(_ text: String) -> String {
     return t
 }
 
+// ── Reformat raw bash output into clearly labelled lines for Turn 2 ───────────
+// Small LLMs struggle with fixed-width column text; named key=value pairs are
+// much easier for them to parse correctly.
+func reformatOutput(_ raw: String, cmd: String) -> String {
+    let lines = raw.components(separatedBy: "\n")
+
+    // ── ps -Axo pid,args,%cpu,%mem ─────────────────────────────────────────────
+    if cmd.contains("ps ") && cmd.contains("%cpu") && cmd.contains("%mem") {
+        let byRAM = cmd.contains("-m")
+        var rows: [String] = [byRAM ? "Processes sorted by RAM (highest first):"
+                                    : "Processes sorted by CPU (highest first):"]
+        for line in lines {
+            let f = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard f.count >= 4, Int(f[0]) != nil else { continue }   // skip header
+            let pid  = String(f[0])
+            let ram  = String(f[f.count - 1])
+            let cpu  = String(f[f.count - 2])
+            let name = f[1 ..< f.count - 2].joined(separator: " ")
+            rows.append("  pid=\(pid), name=\(name), cpu=\(cpu)%, ram=\(ram)%")
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
+    // ── ls -l (Desktop / Downloads / Documents) ────────────────────────────────
+    if cmd.contains("ls -") && (cmd.contains("~/Desktop") || cmd.contains("~/Downloads")
+                                 || cmd.contains("~/Documents")) {
+        let bySize = cmd.contains("-S")
+        var rows: [String] = [bySize ? "Files sorted by size (largest first):"
+                                     : "Files sorted by date (newest first):"]
+        for line in lines {
+            let f = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard f.count >= 9,
+                  f[0].hasPrefix("-") || f[0].hasPrefix("d") else { continue }
+            let size = String(f[4])
+            let name = f[8...].joined(separator: " ")
+            rows.append("  size=\(size), file=\(name)")
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
+    // ── df -h (disk usage) ─────────────────────────────────────────────────────
+    if cmd.hasPrefix("df ") {
+        var rows: [String] = ["Disk space:"]
+        for line in lines {
+            let f = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard f.count >= 5, !f[0].hasPrefix("Filesystem") else { continue }
+            rows.append("  filesystem=\(f[0]), size=\(f[1]), used=\(f[2]), free=\(f[3]), use%=\(f[4])")
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
+    // ── du -sh (folder sizes, tab-separated) ──────────────────────────────────
+    if cmd.hasPrefix("du ") {
+        var rows: [String] = ["Folder sizes:"]
+        for line in lines {
+            let f = line.components(separatedBy: "\t")
+            if f.count >= 2 { rows.append("  size=\(f[0].trimmed), folder=\(f[1].trimmed)") }
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
+    return raw   // all other commands: pass through unchanged
+}
+
 // ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
 func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let timeFmt = DateFormatter()
@@ -364,31 +387,29 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     let now = timeFmt.string(from: Date())
     let stops = stopTokens(for: format)
 
-    let toolList = buildToolList()
-
-    // Turn 1 — ask LLM: pick a command number OR answer directly
+    // Turn 1 — ask LLM to output a bash command or answer directly
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
-    Pick a command number and output: TOOL: <number>
-    If the command needs a value, add it: TOOL: <number> <value>
+    Output a bash command: CMD: <bash command>
     For reminders: REMIND: <number> <seconds|minutes|hours> <message>
     For general knowledge: just answer directly in 1-2 sentences.
 
-    Commands:
-    \(toolList)
     Examples:
-      "battery left?" → TOOL: 1
-      "disk space?" → TOOL: 2
-      "what's using CPU?" → TOOL: 3
-      "is Safari running?" → TOOL: 5 Safari
-      "largest file in downloads?" → TOOL: 12
-      "find notes.txt" → TOOL: 16 notes.txt
+      "battery left?" → CMD: pmset -g batt
+      "disk space?" → CMD: df -h /
+      "what's using CPU?" → CMD: ps -Axo pid,args,%cpu,%mem -r | head -8
+      "RAM usage?" → CMD: ps -Axo pid,args,%cpu,%mem -m | head -8
+      "is Safari running?" → CMD: ps -ax | grep -i Safari | grep -v grep | wc -l
+      "biggest file on desktop?" → CMD: ls -lhS ~/Desktop | head -10
+      "biggest file in downloads?" → CMD: ls -lhS ~/Downloads | head -10
+      "newest file in downloads?" → CMD: ls -lt ~/Downloads | head -5
+      "find notes.txt" → CMD: find ~/ -maxdepth 4 -name notes.txt 2>/dev/null
       "remind me in 5 minutes" → REMIND: 5 minutes time to check
       "set a 30 second timer" → REMIND: 30 seconds done
       "capital of France?" → Paris is the capital of France.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
-    var r1 = callLlama(prompt: p1, maxTokens: 60, temperature: 0.1, stop: stops).trimmed
+    var r1 = callLlama(prompt: p1, maxTokens: 80, temperature: 0.1, stop: stops).trimmed
     // If output was truncated mid-token, retry with double buffer
     if looksLikeTruncated(r1) {
         log("⚠️ Turn 1 looks truncated (\(r1.suffix(20))) — retrying with 120 tokens")
@@ -403,32 +424,20 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Pass reminders straight through
     if firstLine.hasPrefix("REMIND:") { return firstLine }
 
-    // Parse TOOL: <number> [value]
+    // Parse CMD: <bash command>
     var cmd = ""
-    if firstLine.hasPrefix("TOOL:") {
-        let afterTool = String(firstLine.dropFirst(5)).trimmed
-        let parts = afterTool.split(separator: " ", maxSplits: 1)
-        if let numStr = parts.first, let num = Int(numStr) {
-            let value = parts.count > 1 ? String(parts[1]).trimmed : nil
-            cmd = resolveToolCommand(number: num, value: value)
-            log("🔢 Resolved TOOL \(num) → \(cmd)")
-        } else {
-            // LLM output the full command instead of a number — use it directly
-            cmd = afterTool
-            log("⚠️ LLM output full command instead of number: \(cmd)")
-        }
+    if firstLine.hasPrefix("CMD:") {
+        cmd = String(firstLine.dropFirst(4)).trimmed
+        log("🔧 CMD: \(cmd)")
     }
 
-    // Fallback: detect raw shell commands (no TOOL: prefix)
+    // Fallback: detect raw shell commands (no CMD: prefix)
     if cmd.isEmpty {
-        let knownShellCmds = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
-                              "netstat", "iostat", "sw_vers", "sysctl ", "diskutil",
-                              "ls ", "du ", "find ", "locate ", "grep ", "pbpaste",
-                              "networksetup", "defaults ", "mdls ", "mdfind ", "lsof "]
-        let looksLikeShell = knownShellCmds.contains(where: { firstLine.hasPrefix($0) })
-        if looksLikeShell {
-            log("⚠️ LLM skipped TOOL: prefix — treating as tool call: \(firstLine)")
+        let shellPrefixes = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
+                             "ls ", "du ", "find ", "grep ", "pbpaste", "networksetup", "defaults "]
+        if shellPrefixes.contains(where: { firstLine.hasPrefix($0) }) {
             cmd = firstLine
+            log("⚠️ LLM skipped CMD: prefix — treating as command: \(cmd)")
         }
     }
 
@@ -461,13 +470,16 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
         }
     }
 
-    // Guarantee at least 5 non-empty lines reach the LLM; trim to 20 max to save context.
-    let allLines = toolOut.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
+    // Reformat raw columnar text into clearly labelled lines for the LLM.
+    let formatted = reformatOutput(toolOut, cmd: cmd)
+    log("📊 Formatted (\(formatted.count)c): \(formatted.prefix(300))")
+
+    // Trim to 20 non-empty lines max to save context.
+    let allLines = formatted.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
     let topLines = allLines.prefix(20).joined(separator: "\n")
     let dataForLLM = topLines.isEmpty ? "(command returned no output)" : topLines
 
-    // If the result is a list (>4 lines), copy the full output to clipboard so the user
-    // can paste it. The LLM is told about this so it can mention it in its reply.
+    // If the result is a list (>4 lines), copy the raw output to clipboard.
     var clipboardNote = ""
     if allLines.count > 4 {
         DispatchQueue.main.async {
@@ -478,33 +490,22 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
         log("📋 Copied \(allLines.count)-line result to clipboard")
     }
 
-    // Tell the LLM how the ps data is sorted so it doesn't confuse CPU% with RAM%
-    let sortNote: String
-    if cmd.contains("-m") {
-        sortNote = "sorted by RAM usage (highest first)"
-    } else if cmd.contains("-r") {
-        sortNote = "sorted by CPU usage (highest first)"
-    } else {
-        sortNote = ""
-    }
-    let sortLabel = sortNote.isEmpty ? "" : "Note: list is \(sortNote).\n"
-
     // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
     let sys2 = """
     You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.
     Use ONLY the data below — do not invent numbers or process names.
     Never refuse. If the data does not answer the question, say: "I don't have that data right now."
     """
-    let usr2 = "Live data (from `\(cmd)`):\n\(clipboardNote)\(sortLabel)\(dataForLLM)\n\nQuestion: \(query)"
+    let usr2 = "Live data:\n\(clipboardNote)\(dataForLLM)\n\nQuestion: \(query)"
     let p2 = buildPrompt(system: sys2, user: usr2, format: format)
     let r2 = cleanLLMOutput(callLlama(prompt: p2, maxTokens: 150, stop: stops))
 
-    // Safety net: never speak a TOOL: line or a raw shell command
+    // Safety net: never speak a CMD: line or a raw shell command
     let shellPrefixes = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
                          "ls ", "du ", "find ", "grep ", "pbpaste", "networksetup", "defaults "]
     let r2LooksLikeShell = shellPrefixes.contains(where: { r2.hasPrefix($0) })
                         || (r2.contains(" | ") && r2.count < 200 && !r2.contains("?"))
-    if r2.hasPrefix("TOOL:") || r2LooksLikeShell {
+    if r2.hasPrefix("CMD:") || r2LooksLikeShell {
         let rest = r2.components(separatedBy: "\n").dropFirst().joined(separator: "\n").trimmed
         return rest.isEmpty ? "I ran the command but couldn't summarise the results." : rest
     }
