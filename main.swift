@@ -342,7 +342,10 @@ func reformatOutput(_ raw: String, cmd: String) -> String {
     // ── ls -l (Desktop / Downloads / Documents) ────────────────────────────────
     if cmd.contains("ls -") && (cmd.contains("~/Desktop") || cmd.contains("~/Downloads")
                                  || cmd.contains("~/Documents")) {
-        let bySize = cmd.contains("-S")
+        // "-S" may appear as a combined flag like "-lhS", so check for uppercase S
+        // in the flags portion (before the first space after "ls")
+        let lsFlags = cmd.components(separatedBy: " ").first(where: { $0.hasPrefix("-") }) ?? ""
+        let bySize = lsFlags.contains("S")
         var rows: [String] = [bySize ? "Files sorted by size (largest first):"
                                      : "Files sorted by date (newest first):"]
         for line in lines {
@@ -352,6 +355,31 @@ func reformatOutput(_ raw: String, cmd: String) -> String {
             let size = String(f[4])
             let name = f[8...].joined(separator: " ")
             rows.append("  size=\(size), file=\(name)")
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
+    // ── find -ls (file type searches across device) ────────────────────────────
+    // `find -ls` columns: inode blocks perms links owner group size month day time path
+    // Sorted by size already (via sort -k7 -rn in the command).
+    if cmd.contains("find ") && cmd.contains(" -ls") {
+        var rows: [String] = ["Files found (sorted by size, largest first):"]
+        for line in lines {
+            let f = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard f.count >= 11 else { continue }
+            let size = String(f[6])                                // 7th field = size in bytes
+            let path = f[10...].joined(separator: " ")             // path (may contain spaces)
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            // Convert bytes to human-readable
+            let bytes = Int(size) ?? 0
+            let hr: String
+            switch bytes {
+            case 1_073_741_824...: hr = String(format: "%.1fG", Double(bytes)/1_073_741_824)
+            case 1_048_576...:     hr = String(format: "%.1fM", Double(bytes)/1_048_576)
+            case 1_024...:         hr = String(format: "%.0fK", Double(bytes)/1_024)
+            default:               hr = "\(bytes)B"
+            }
+            rows.append("  size=\(hr), file=\(name)")
         }
         return rows.count > 1 ? rows.joined(separator: "\n") : raw
     }
@@ -428,6 +456,8 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       "find file called office on desktop?" → CMD: find ~/Desktop -iname "*office*" 2>/dev/null
       "find notes.txt on desktop?" → CMD: find ~/Desktop -iname "*notes.txt*" 2>/dev/null
       "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -20
+      "biggest video on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.avi" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
+      "biggest image on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.jpg" -o -iname "*.png" -o -iname "*.heic" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
       "remind me in 5 minutes" → REMIND: 5 minutes time to check
       "set a 30 second timer" → REMIND: 30 seconds done
       "capital of France?" → Paris is the capital of France.
