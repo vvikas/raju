@@ -405,6 +405,36 @@ func reformatOutput(_ raw: String, cmd: String) -> String {
         return rows.count > 1 ? rows.joined(separator: "\n") : raw
     }
 
+    // ── plain find (filename search — one path per line) ─────────────────────
+    if cmd.hasPrefix("find ") && !cmd.contains(" -ls") {
+        let folder = extractFindFolder(cmd)
+        var rows: [String] = ["Files matching search in \(folder):"]
+        for line in lines {
+            let path = line.trimmed
+            guard !path.isEmpty else { continue }
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            rows.append("  \(name)")
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
+    // ── grep -r (content search — one matching file path per line) ────────────
+    if cmd.contains("grep ") && cmd.contains("-r") {
+        let folder: String
+        if      cmd.contains("~/Desktop")   { folder = "~/Desktop"   }
+        else if cmd.contains("~/Downloads") { folder = "~/Downloads" }
+        else if cmd.contains("~/Documents") { folder = "~/Documents" }
+        else                                { folder = "~/"           }
+        var rows: [String] = ["Files containing the search term in \(folder):"]
+        for line in lines {
+            let path = line.trimmed
+            guard !path.isEmpty else { continue }
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            rows.append("  \(name)")
+        }
+        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+    }
+
     return raw   // all other commands: pass through unchanged
 }
 
@@ -457,6 +487,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
       "find notes.txt on desktop?" → CMD: find ~/Desktop -iname "*notes.txt*" 2>/dev/null
       "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -20
       "find file on desktop containing word language?" → CMD: grep -ril "language" ~/Desktop 2>/dev/null | head -20
+      "find file in downloads containing word apple?" → CMD: grep -ril "apple" ~/Downloads 2>/dev/null | head -20
       "biggest video on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.avi" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
       "biggest image on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.jpg" -o -iname "*.png" -o -iname "*.heic" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
       "remind me in 5 minutes" → REMIND: 5 minutes time to check
@@ -558,10 +589,11 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
     let sys2 = """
     You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.
-    Use ONLY the data below — do not invent numbers or process names.
-    Never refuse. If the data does not answer the question, say: "I don't have that data right now."
+    The data below is the output of a command run to answer the question.
+    Report what the data shows. Use ONLY the data — do not invent anything.
+    If the data shows no results, say clearly that nothing was found.
     """
-    let usr2 = "Live data:\n\(clipboardNote)\(dataForLLM)\n\nQuestion: \(query)"
+    let usr2 = "Command output (from `\(cmd)`):\n\(clipboardNote)\(dataForLLM)\n\nQuestion: \(query)"
     let p2 = buildPrompt(system: sys2, user: usr2, format: format)
     let r2 = cleanLLMOutput(callLlama(prompt: p2, maxTokens: 150, stop: stops))
 
