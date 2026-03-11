@@ -350,120 +350,102 @@ func cleanLLMOutput(_ text: String) -> String {
 func reformatOutput(_ raw: String, cmd: String) -> String {
     let lines = raw.components(separatedBy: "\n")
 
-    // ── ps -Axo pid,args,%cpu,%mem ─────────────────────────────────────────────
-    if cmd.contains("ps ") && cmd.contains("%cpu") && cmd.contains("%mem") {
+    // ── ps -Axo pid,comm,%cpu,%mem ─────────────────────────────────────────────
+    // comm = binary name only (no spaces), so columns are always: pid name cpu% mem%
+    // Only show the metric the user asked about — don't dump both when one suffices.
+    if cmd.contains("ps ") && cmd.contains("comm") && cmd.contains("%cpu") && cmd.contains("%mem") {
         let byRAM = cmd.contains("-m")
-        var rows: [String] = [byRAM ? "Processes sorted by RAM (highest first):"
-                                    : "Processes sorted by CPU (highest first):"]
+        let label = byRAM ? "Top processes by RAM:" : "Top processes by CPU:"
+        var rows: [String] = [label]
         for line in lines {
             let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count >= 4, Int(f[0]) != nil else { continue }   // skip header
-            let pid  = String(f[0])
-            let ram  = String(f[f.count - 1])
-            let cpu  = String(f[f.count - 2])
-            let name = f[1 ..< f.count - 2].joined(separator: " ")
-            rows.append("  pid=\(pid), name=\(name), cpu=\(cpu)%, ram=\(ram)%")
+            guard f.count == 4, Int(f[0]) != nil else { continue }  // skip header/malformed
+            let name = String(f[1])
+            let cpu  = String(f[2])
+            let ram  = String(f[3])
+            // Only show the relevant metric so small LLMs don't get confused
+            if byRAM {
+                rows.append("  \(name): \(ram)% RAM")
+            } else {
+                rows.append("  \(name): \(cpu)% CPU")
+            }
         }
         return rows.count > 1 ? rows.joined(separator: "\n") : raw
     }
 
-    // ── ls -l (Desktop / Downloads / Documents) ────────────────────────────────
+    // ── ls -lh (Desktop / Downloads / Documents) ───────────────────────────────
     if cmd.contains("ls -") && (cmd.contains("~/Desktop") || cmd.contains("~/Downloads")
                                  || cmd.contains("~/Documents")) {
-        // "-S" may appear as a combined flag like "-lhS", so check for uppercase S
-        // in the flags portion (before the first space after "ls")
         let lsFlags = cmd.components(separatedBy: " ").first(where: { $0.hasPrefix("-") }) ?? ""
         let bySize = lsFlags.contains("S")
-        var rows: [String] = [bySize ? "Files sorted by size (largest first):"
-                                     : "Files sorted by date (newest first):"]
+        let label = bySize ? "Files by size (largest first):" : "Files by date (newest first):"
+        var rows: [String] = [label]
         for line in lines {
             let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count >= 9,
-                  f[0].hasPrefix("-") || f[0].hasPrefix("d") else { continue }
+            guard f.count >= 9, f[0].hasPrefix("-") || f[0].hasPrefix("d") else { continue }
             let size = String(f[4])
             let name = f[8...].joined(separator: " ")
-            rows.append("  size=\(size), file=\(name)")
+            rows.append("  \(name) (\(size))")
         }
         return rows.count > 1 ? rows.joined(separator: "\n") : raw
     }
 
-    // ── find -ls (file type searches across device) ────────────────────────────
-    // `find -ls` columns: inode blocks perms links owner group size month day time path
-    // Sorted by size already (via sort -k7 -rn in the command).
+    // ── find -ls (file type searches) ─────────────────────────────────────────
     if cmd.contains("find ") && cmd.contains(" -ls") {
-        var rows: [String] = ["Files found (sorted by size, largest first):"]
+        var rows: [String] = ["Files by size (largest first):"]
         for line in lines {
             let f = line.split(separator: " ", omittingEmptySubsequences: true)
             guard f.count >= 11 else { continue }
-            let size = String(f[6])                                // 7th field = size in bytes
-            let path = f[10...].joined(separator: " ")             // path (may contain spaces)
-            let name = URL(fileURLWithPath: path).lastPathComponent
-            // Convert bytes to human-readable
-            let bytes = Int(size) ?? 0
+            let bytes = Int(String(f[6])) ?? 0
             let hr: String
             switch bytes {
-            case 1_073_741_824...: hr = String(format: "%.1fG", Double(bytes)/1_073_741_824)
-            case 1_048_576...:     hr = String(format: "%.1fM", Double(bytes)/1_048_576)
-            case 1_024...:         hr = String(format: "%.0fK", Double(bytes)/1_024)
+            case 1_073_741_824...: hr = String(format: "%.1fGB", Double(bytes)/1_073_741_824)
+            case 1_048_576...:     hr = String(format: "%.1fMB", Double(bytes)/1_048_576)
+            case 1_024...:         hr = String(format: "%.0fKB", Double(bytes)/1_024)
             default:               hr = "\(bytes)B"
             }
-            rows.append("  size=\(hr), file=\(name)")
+            let name = URL(fileURLWithPath: f[10...].joined(separator: " ")).lastPathComponent
+            rows.append("  \(name) (\(hr))")
         }
         return rows.count > 1 ? rows.joined(separator: "\n") : raw
     }
 
     // ── df -h (disk usage) ─────────────────────────────────────────────────────
     if cmd.hasPrefix("df ") {
-        var rows: [String] = ["Disk space:"]
+        // Only show the main volume line (mounted at /)
         for line in lines {
             let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count >= 5, !f[0].hasPrefix("Filesystem") else { continue }
-            rows.append("  filesystem=\(f[0]), size=\(f[1]), used=\(f[2]), free=\(f[3]), use%=\(f[4])")
+            guard f.count >= 9, String(f[8]) == "/" else { continue }
+            return "Disk: \(f[2]) used, \(f[3]) free, \(f[4]) full"
         }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+        return raw
     }
 
-    // ── du -sh (folder sizes, tab-separated) ──────────────────────────────────
+    // ── du -sh (folder sizes) ──────────────────────────────────────────────────
     if cmd.hasPrefix("du ") {
         var rows: [String] = ["Folder sizes:"]
         for line in lines {
             let f = line.components(separatedBy: "\t")
-            if f.count >= 2 { rows.append("  size=\(f[0].trimmed), folder=\(f[1].trimmed)") }
+            if f.count >= 2 {
+                let folder = URL(fileURLWithPath: f[1].trimmed).lastPathComponent
+                rows.append("  \(folder): \(f[0].trimmed)")
+            }
         }
         return rows.count > 1 ? rows.joined(separator: "\n") : raw
     }
 
-    // ── plain find (filename search — one path per line) ─────────────────────
-    if cmd.hasPrefix("find ") && !cmd.contains(" -ls") {
-        let folder = extractFindFolder(cmd)
-        var rows: [String] = ["Files matching search in \(folder):"]
+    // ── plain find / grep — just list file names ──────────────────────────────
+    if cmd.hasPrefix("find ") || (cmd.contains("grep ") && cmd.contains("-r")) {
+        var names: [String] = []
         for line in lines {
             let path = line.trimmed
             guard !path.isEmpty else { continue }
-            let name = URL(fileURLWithPath: path).lastPathComponent
-            rows.append("  \(name)")
+            names.append(URL(fileURLWithPath: path).lastPathComponent)
         }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
+        return names.isEmpty ? raw : names.joined(separator: "\n")
     }
 
-    // ── grep -r (content search — one matching file path per line) ────────────
-    if cmd.contains("grep ") && cmd.contains("-r") {
-        let folder: String
-        if      cmd.contains("~/Desktop")   { folder = "~/Desktop"   }
-        else if cmd.contains("~/Downloads") { folder = "~/Downloads" }
-        else if cmd.contains("~/Documents") { folder = "~/Documents" }
-        else                                { folder = "~/"           }
-        var rows: [String] = ["Files containing the search term in \(folder):"]
-        for line in lines {
-            let path = line.trimmed
-            guard !path.isEmpty else { continue }
-            let name = URL(fileURLWithPath: path).lastPathComponent
-            rows.append("  \(name)")
-        }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
-    }
-
-    return raw   // all other commands: pass through unchanged
+    return raw   // all other commands: pass raw to LLM
 }
 
 // ── find command helpers — extract keyword + folder to rebuild safer fallback ──
@@ -509,8 +491,8 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     Examples:
       "battery left?" → CMD: pmset -g batt
       "disk space?" → CMD: df -h /
-      "what's using CPU?" → CMD: ps -Axo pid,args,%cpu,%mem -r | head -8
-      "RAM usage?" → CMD: ps -Axo pid,args,%cpu,%mem -m | head -8
+      "what's using CPU?" → CMD: ps -Axo pid,comm,%cpu,%mem -r | head -8
+      "RAM usage?" → CMD: ps -Axo pid,comm,%cpu,%mem -m | head -8
       "is Safari running?" → CMD: ps -ax | grep -i Safari | grep -v grep | wc -l
       "biggest file on desktop?" → CMD: ls -lhS ~/Desktop | head -10
       "biggest file in downloads?" → CMD: ls -lhS ~/Downloads | head -10
@@ -578,7 +560,7 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
         if cmd.lowercased().contains("ps ") {
             // Preserve the sort flag the LLM picked; fall back to -r if none present
             let sortFlag = cmd.contains("-m") ? "-m" : "-r"
-            fallback = "ps -Axo pid,args,%cpu,%mem \(sortFlag) | head -8"
+            fallback = "ps -Axo pid,comm,%cpu,%mem \(sortFlag) | head -8"
         } else if cmd.hasPrefix("find ") || cmd.contains(" find ") {
             // Rebuild with case-insensitive wildcard to fix "*.X*" style mistakes
             if let kw = extractFindKeyword(cmd) {
