@@ -4,7 +4,9 @@
 
 Hold the menubar icon → speak → get a real answer. All on your machine. All private. No API keys, no subscriptions, no internet required after install.
 
-![Raju menu](assets/screenshot.png)
+| Menu | Live Log |
+|:----:|:--------:|
+| ![Raju menu](assets/menu.png) | ![Raju log](assets/log.png) |
 
 ---
 
