@@ -1036,21 +1036,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         state = .recording
-        log("🔴 Recording started")
+        log("🔴 Recording started (rec: \(REC_BIN))")
         try? FileManager.default.removeItem(atPath: AUDIO_FILE)
 
         recProcess = Process()
         recProcess!.executableURL = URL(fileURLWithPath: REC_BIN)
         recProcess!.arguments = ["-b", "16", AUDIO_FILE, "rate", "16000", "channels", "1", "trim", "0", "60"]
         recProcess!.standardOutput = Pipe()
-        recProcess!.standardError  = Pipe()
-        try? recProcess!.run()
+        let recErrPipe = Pipe()
+        recProcess!.standardError  = recErrPipe
+        do {
+            try recProcess!.run()
+            log("🎤 rec PID \(recProcess!.processIdentifier)")
+        } catch {
+            log("❌ rec failed to start: \(error)")
+            state = .idle; return
+        }
+
+        // After 0.5s verify the file appeared — if not, rec likely can't open the mic
+        let pid = recProcess!.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard self?.state == .recording else { return }
+            let size = (try? FileManager.default.attributesOfItem(atPath: AUDIO_FILE)[.size] as? Int) ?? 0
+            if size == 0 {
+                // Read any stderr error from rec
+                let errData = recErrPipe.fileHandleForReading.availableData
+                let errMsg  = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                log("⚠️ rec (PID \(pid)) wrote 0 bytes after 0.5s — mic may be blocked. rec stderr: \(errMsg.isEmpty ? "(none)" : errMsg)")
+            }
+        }
     }
 
     func stopRecording() {
         state = .transcribing
         recProcess?.terminate(); recProcess = nil
-        log("⏹️  Recording stopped — sending to whisper-server")
+        // Give rec ~200ms to flush and finalize the WAV header before we read it
+        Thread.sleep(forTimeInterval: 0.2)
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: AUDIO_FILE)[.size] as? Int) ?? 0
+        log("⏹️  Recording stopped — \(fileSize) bytes — sending to whisper-server")
 
         DispatchQueue.global(qos: .userInitiated).async {
             // Step 1: Whisper STT
