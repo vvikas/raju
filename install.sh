@@ -221,6 +221,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 ok "Raju.app created at $APP"
 
+# Ad-hoc sign the app so macOS can track microphone permission to this bundle.
+# Without a signature, TCC cannot reliably associate the mic grant with Raju.app
+# and recording silently returns blank audio.
+codesign --force --deep --sign - "$APP" 2>/dev/null && ok "Raju.app signed (ad-hoc)" \
+  || warn "codesign failed — mic permission prompt may not appear on first launch"
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════"
