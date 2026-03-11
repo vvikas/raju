@@ -348,104 +348,7 @@ func cleanLLMOutput(_ text: String) -> String {
 // Small LLMs struggle with fixed-width column text; named key=value pairs are
 // much easier for them to parse correctly.
 func reformatOutput(_ raw: String, cmd: String) -> String {
-    let lines = raw.components(separatedBy: "\n")
-
-    // ── ps -Axo pid,comm,%cpu,%mem ─────────────────────────────────────────────
-    // comm = binary name only (no spaces), so columns are always: pid name cpu% mem%
-    // Only show the metric the user asked about — don't dump both when one suffices.
-    if cmd.contains("ps ") && cmd.contains("comm") && cmd.contains("%cpu") && cmd.contains("%mem") {
-        let byRAM = cmd.contains("-m")
-        let label = byRAM ? "Top processes by RAM:" : "Top processes by CPU:"
-        var rows: [String] = [label]
-        for line in lines {
-            let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count == 4, Int(f[0]) != nil else { continue }  // skip header/malformed
-            let name = String(f[1])
-            let cpu  = String(f[2])
-            let ram  = String(f[3])
-            // Only show the relevant metric so small LLMs don't get confused
-            if byRAM {
-                rows.append("  \(name): \(ram)% RAM")
-            } else {
-                rows.append("  \(name): \(cpu)% CPU")
-            }
-        }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
-    }
-
-    // ── ls -lh (Desktop / Downloads / Documents) ───────────────────────────────
-    if cmd.contains("ls -") && (cmd.contains("~/Desktop") || cmd.contains("~/Downloads")
-                                 || cmd.contains("~/Documents")) {
-        let lsFlags = cmd.components(separatedBy: " ").first(where: { $0.hasPrefix("-") }) ?? ""
-        let bySize = lsFlags.contains("S")
-        let label = bySize ? "Files by size (largest first):" : "Files by date (newest first):"
-        var rows: [String] = [label]
-        for line in lines {
-            let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count >= 9, f[0].hasPrefix("-") || f[0].hasPrefix("d") else { continue }
-            let size = String(f[4])
-            let name = f[8...].joined(separator: " ")
-            rows.append("  \(name) (\(size))")
-        }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
-    }
-
-    // ── find -ls (file type searches) ─────────────────────────────────────────
-    if cmd.contains("find ") && cmd.contains(" -ls") {
-        var rows: [String] = ["Files by size (largest first):"]
-        for line in lines {
-            let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count >= 11 else { continue }
-            let bytes = Int(String(f[6])) ?? 0
-            let hr: String
-            switch bytes {
-            case 1_073_741_824...: hr = String(format: "%.1fGB", Double(bytes)/1_073_741_824)
-            case 1_048_576...:     hr = String(format: "%.1fMB", Double(bytes)/1_048_576)
-            case 1_024...:         hr = String(format: "%.0fKB", Double(bytes)/1_024)
-            default:               hr = "\(bytes)B"
-            }
-            let name = URL(fileURLWithPath: f[10...].joined(separator: " ")).lastPathComponent
-            rows.append("  \(name) (\(hr))")
-        }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
-    }
-
-    // ── df -h (disk usage) ─────────────────────────────────────────────────────
-    if cmd.hasPrefix("df ") {
-        // Only show the main volume line (mounted at /)
-        for line in lines {
-            let f = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard f.count >= 9, String(f[8]) == "/" else { continue }
-            return "Disk: \(f[2]) used, \(f[3]) free, \(f[4]) full"
-        }
-        return raw
-    }
-
-    // ── du -sh (folder sizes) ──────────────────────────────────────────────────
-    if cmd.hasPrefix("du ") {
-        var rows: [String] = ["Folder sizes:"]
-        for line in lines {
-            let f = line.components(separatedBy: "\t")
-            if f.count >= 2 {
-                let folder = URL(fileURLWithPath: f[1].trimmed).lastPathComponent
-                rows.append("  \(folder): \(f[0].trimmed)")
-            }
-        }
-        return rows.count > 1 ? rows.joined(separator: "\n") : raw
-    }
-
-    // ── plain find / grep — just list file names ──────────────────────────────
-    if cmd.hasPrefix("find ") || (cmd.contains("grep ") && cmd.contains("-r")) {
-        var names: [String] = []
-        for line in lines {
-            let path = line.trimmed
-            guard !path.isEmpty else { continue }
-            names.append(URL(fileURLWithPath: path).lastPathComponent)
-        }
-        return names.isEmpty ? raw : names.joined(separator: "\n")
-    }
-
-    return raw   // all other commands: pass raw to LLM
+    return raw   // pass output directly to LLM without reformatting
 }
 
 // ── find command helpers — extract keyword + folder to rebuild safer fallback ──
@@ -480,33 +383,33 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     // Turn 1 — ask LLM to output a bash command or answer directly
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
-    Output a bash command: CMD: <bash command>
-    For reminders: REMIND: <number> <seconds|minutes|hours> <message>
-    For general knowledge: just answer directly in 1-2 sentences.
-
-    File search rules:
-      - File by NAME (called, named): find <folder> -iname "*keyword*" 2>/dev/null
-      - File by CONTENT (contains word, has text inside): grep -ril "keyword" <folder> 2>/dev/null | head -20
+    Reply with CMD: <bash command>, REMIND: <n> <unit> <msg>, or answer directly in 1-2 sentences.
+    Commands must produce short output (under 10 lines). Always pipe through head -6 or head -8.
 
     Examples:
-      "battery left?" → CMD: pmset -g batt
-      "disk space?" → CMD: df -h /
-      "what's using CPU?" → CMD: ps -Axo pid,comm,%cpu,%mem -r | head -8
-      "RAM usage?" → CMD: ps -Axo pid,comm,%cpu,%mem -m | head -8
-      "is Safari running?" → CMD: ps -ax | grep -i Safari | grep -v grep | wc -l
-      "biggest file on desktop?" → CMD: ls -lhS ~/Desktop | head -10
-      "biggest file in downloads?" → CMD: ls -lhS ~/Downloads | head -10
-      "newest file in downloads?" → CMD: ls -lt ~/Downloads | head -5
-      "find file called office on desktop?" → CMD: find ~/Desktop -iname "*office*" 2>/dev/null
-      "find notes.txt on desktop?" → CMD: find ~/Desktop -iname "*notes.txt*" 2>/dev/null
-      "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -20
-      "find file on desktop containing word language?" → CMD: grep -ril "language" ~/Desktop 2>/dev/null | head -20
-      "find file in downloads containing word apple?" → CMD: grep -ril "apple" ~/Downloads 2>/dev/null | head -20
-      # grep flags: -r=recursive -i=case-insensitive -l=list filenames only (NOT content lines). Always use -ril together.
-      "biggest video on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" -o -iname "*.avi" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
+      "what's using CPU?" → CMD: top -l 1 -o cpu -n 5 -stats command,cpu | tail -6
+      "RAM usage?" → CMD: top -l 1 -o mem -n 5 -stats command,mem | tail -6
+      "is Safari running?" → CMD: pgrep -x Safari && echo running || echo not running
+      "how many processes running?" → CMD: ps -ax | wc -l
+      "disk space?" → CMD: df -h / | tail -1
+      "battery level?" → CMD: pmset -g batt | tail -1
+      "system uptime / load?" → CMD: uptime
+      "CPU temperature / fans?" → CMD: sudo powermetrics -n 1 -i 1 --samplers smc 2>/dev/null | grep -i "temp\\|fan" | head -6
+      "network info / IP?" → CMD: ifconfig en0 | grep "inet " | head -2
+      "wifi network?" → CMD: networksetup -getairportnetwork en0
+      "active connections?" → CMD: netstat -an | grep ESTABLISHED | wc -l
+      "who's logged in?" → CMD: who
+      "open ports?" → CMD: lsof -i -P | grep LISTEN | head -8
+      "biggest file on desktop?" → CMD: ls -lhS ~/Desktop | head -6
+      "biggest file in downloads?" → CMD: ls -lhS ~/Downloads | head -6
+      "newest file in downloads?" → CMD: ls -lt ~/Downloads | head -6
+      "home folder sizes?" → CMD: du -sh ~/* 2>/dev/null | sort -rh | head -8
+      "biggest video on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.mp4" -o -iname "*.mov" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
       "biggest image on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.jpg" -o -iname "*.png" -o -iname "*.heic" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
-      "remind me in 5 minutes" → REMIND: 5 minutes time to check
-      "set a 30 second timer" → REMIND: 30 seconds done
+      "find file called notes on desktop?" → CMD: find ~/Desktop -iname "*notes*" 2>/dev/null | head -8
+      "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -8
+      "clipboard?" → CMD: pbpaste | head -5
+      "remind me in 5 minutes to check oven" → REMIND: 5 minutes check oven
       "capital of France?" → Paris is the capital of France.
     """
     let p1 = buildPrompt(system: sys1, user: query, format: format)
