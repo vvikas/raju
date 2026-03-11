@@ -8,7 +8,17 @@ let WHISPER_SERVER = "\(HOME)/local_llms/whisper.cpp/build/bin/whisper-server"
 let WHISPER_MODEL  = "\(HOME)/local_llms/whisper.cpp/models/ggml-small.bin"
 let LLAMA_SERVER   = "\(HOME)/local_llms/llama.cpp/build/bin/llama-server"
 let REC_BIN        = "/usr/local/bin/rec"
-let PYTHON3_BIN    = "/usr/local/bin/python3"
+let PYTHON3_BIN: String = {
+    // Read path written by installer; fall back to common locations
+    let configPath = "\(HOME)/.raju/python3_bin"
+    if let path = try? String(contentsOfFile: configPath, encoding: .utf8)
+                            .trimmingCharacters(in: .whitespacesAndNewlines),
+       !path.isEmpty, FileManager.default.fileExists(atPath: path) { return path }
+    for p in ["/usr/local/bin/python3", "/opt/homebrew/bin/python3", "/usr/bin/python3"] {
+        if FileManager.default.fileExists(atPath: p) { return p }
+    }
+    return "/usr/local/bin/python3"
+}()
 let PIPER_OUT      = "/tmp/raju_tts.wav"
 let SAY_BIN        = "/usr/bin/say"
 let AUDIO_FILE     = "/tmp/raju_input.wav"
@@ -21,6 +31,19 @@ let LLAMA_PORT     = 8080
 let WHISPER_PORT   = 8081
 let LLAMA_URL      = "http://127.0.0.1:\(LLAMA_PORT)"
 let WHISPER_URL    = "http://127.0.0.1:\(WHISPER_PORT)"
+
+// ── GPU preference ────────────────────────────────────────────────────────────
+// Persisted in UserDefaults; installer writes ~/.raju/use_gpu based on CPU type.
+// Auto-detect fallback: Apple Silicon (arm64) → GPU on; Intel → GPU off.
+var useGPU: Bool {
+    get {
+        if let pref = UserDefaults.standard.object(forKey: "useGPU") as? Bool { return pref }
+        if let val = try? String(contentsOfFile: "\(HOME)/.raju/use_gpu", encoding: .utf8)
+                             .trimmingCharacters(in: .whitespacesAndNewlines) { return val == "true" }
+        return shell("/usr/bin/uname", ["-m"]).trimmed == "arm64"
+    }
+    set { UserDefaults.standard.set(newValue, forKey: "useGPU") }
+}
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 // Serial queue keeps concurrent log() calls from interleaving bytes mid–emoji
@@ -68,7 +91,7 @@ enum RajuState {
 // ── TTS — piper (python3 -m piper) if model exists, fallback to say ──────────
 func speak(_ text: String, modelPath: String) {
     let fm = FileManager.default
-    if fm.fileExists(atPath: modelPath) {
+    if fm.fileExists(atPath: modelPath) && fm.fileExists(atPath: PYTHON3_BIN) {
         let piper = Process()
         piper.executableURL = URL(fileURLWithPath: PYTHON3_BIN)
         piper.arguments = ["-m", "piper", "--model", modelPath, "--output_file", PIPER_OUT]
@@ -649,6 +672,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let itemStatus       = NSMenuItem(title: "",                      action: nil,                                    keyEquivalent: "")
     let itemQuery        = NSMenuItem(title: "",                      action: nil,                                    keyEquivalent: "")
     let itemReply        = NSMenuItem(title: "",                      action: nil,                                    keyEquivalent: "")
+    let itemGPUToggle    = NSMenuItem(title: "  ⚡ GPU: On",           action: #selector(toggleGPU),                   keyEquivalent: "")
     let itemLaunchAtLogin = NSMenuItem(title: "  Launch at Login",    action: #selector(toggleLaunchAtLogin),         keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -690,6 +714,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         itemLlamaToggle.target   = self
         itemWhisperToggle.target = self
+        itemGPUToggle.target     = self
+        itemGPUToggle.title      = useGPU ? "  ⚡ GPU: On" : "  ⚪ GPU: Off"
         itemLaunchAtLogin.target = self
         itemLaunchAtLogin.state  = isLaunchAtLoginEnabled() ? .on : .off
 
@@ -702,6 +728,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(itemModel)
         menu.addItem(itemVoice)
+        menu.addItem(itemGPUToggle)
         menu.addItem(itemHint)
         menu.addItem(itemStatus)
         menu.addItem(NSMenuItem.separator())
@@ -750,7 +777,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         log("🚀 Starting llama-server (\(model.name)) on :\(LLAMA_PORT)…")
         llamaProcess = Process()
         llamaProcess!.executableURL = URL(fileURLWithPath: LLAMA_SERVER)
-        llamaProcess!.arguments = ["-m", model.path, "-ngl", "999",
+        llamaProcess!.arguments = ["-m", model.path, "-ngl", useGPU ? "999" : "0",
                                    "--port", "\(LLAMA_PORT)", "--host", "127.0.0.1",
                                    "-n", "200", "--log-disable"]
         llamaProcess!.standardOutput = Pipe()
@@ -789,8 +816,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         log("🚀 Starting whisper-server (small) on :\(WHISPER_PORT)…")
         whisperProcess = Process()
         whisperProcess!.executableURL = URL(fileURLWithPath: WHISPER_SERVER)
-        whisperProcess!.arguments = ["-m", WHISPER_MODEL,
-                                     "--port", "\(WHISPER_PORT)", "--host", "127.0.0.1"]
+        var whisperArgs = ["-m", WHISPER_MODEL, "--port", "\(WHISPER_PORT)", "--host", "127.0.0.1"]
+        if !useGPU { whisperArgs.append("--no-gpu") }
+        whisperProcess!.arguments = whisperArgs
         whisperProcess!.standardOutput = Pipe()
         whisperProcess!.standardError  = Pipe()
         try? whisperProcess!.run()
@@ -924,6 +952,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.itemWhisperToggle.title = "  ⏳ Starting…"
             }
             DispatchQueue.global(qos: .background).async { self.startWhisperServer() }
+        }
+    }
+
+    // ── GPU toggle ─────────────────────────────────────────────────────────────
+    @objc func toggleGPU() {
+        useGPU = !useGPU
+        itemGPUToggle.title = useGPU ? "  ⚡ GPU: On" : "  ⚪ GPU: Off"
+        log("🖥️ GPU acceleration \(useGPU ? "enabled" : "disabled") — restarting servers…")
+        DispatchQueue.main.async {
+            self.itemLlama.title   = "  ⏳ LLM restarting…"
+            self.itemWhisper.title = "  ⏳ Whisper restarting…"
+        }
+        whisperProcess?.terminate(); whisperProcess = nil
+        pkillByName("whisper-server")
+        llamaProcess?.terminate(); llamaProcess = nil
+        pkillByName("llama-server")
+        DispatchQueue.global(qos: .background).async {
+            Thread.sleep(forTimeInterval: 1)
+            self.startWhisperServer()
+        }
+        DispatchQueue.global(qos: .background).async {
+            Thread.sleep(forTimeInterval: 1)
+            self.startLlamaServer()
         }
     }
 
@@ -1099,7 +1150,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         recProcess = Process()
         recProcess!.executableURL = URL(fileURLWithPath: REC_BIN)
-        recProcess!.arguments = [AUDIO_FILE, "rate", "16000", "channels", "1", "trim", "0", "60"]
+        recProcess!.arguments = ["-b", "16", AUDIO_FILE, "rate", "16000", "channels", "1", "trim", "0", "60"]
         recProcess!.standardOutput = Pipe()
         recProcess!.standardError  = Pipe()
         try? recProcess!.run()

@@ -16,11 +16,23 @@ echo "  Raju — Local Voice Assistant — Installer"
 echo "══════════════════════════════════════════"
 echo ""
 
-# ── 1. macOS check ─────────────────────────────────────────────────────────────
+# ── 1. macOS check + GPU detection ────────────────────────────────────────────
 if [[ "$(uname)" != "Darwin" ]]; then
   fail "Raju requires macOS."
 fi
 ok "macOS detected ($(sw_vers -productVersion))"
+
+ARCH=$(uname -m)
+mkdir -p "$HOME/.raju"
+if [[ "$ARCH" == "arm64" ]]; then
+  ok "Apple Silicon (arm64) — GPU acceleration enabled by default"
+  echo "true"  > "$HOME/.raju/use_gpu"
+  CMAKE_GPU_FLAGS="-DGGML_METAL=ON"
+else
+  warn "Intel Mac detected — GPU disabled by default (Metal compatibility issue)"
+  echo "false" > "$HOME/.raju/use_gpu"
+  CMAKE_GPU_FLAGS="-DGGML_METAL=OFF"
+fi
 
 # ── 2. Xcode Command Line Tools (for swiftc) ──────────────────────────────────
 if ! command -v swiftc &>/dev/null; then
@@ -49,10 +61,10 @@ ok "sox (rec at $(which rec))"
 LLAMA_DIR="$HOME/local_llms/llama.cpp"
 LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 if [[ ! -f "$LLAMA_BIN" ]]; then
-  warn "llama.cpp not found — building from source with Metal support…"
+  warn "llama.cpp not found — building from source…"
   mkdir -p "$HOME/local_llms"
   git clone https://github.com/ggerganov/llama.cpp "$LLAMA_DIR"
-  cmake -B "$LLAMA_DIR/build" -S "$LLAMA_DIR" -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
+  cmake -B "$LLAMA_DIR/build" -S "$LLAMA_DIR" $CMAKE_GPU_FLAGS -DCMAKE_BUILD_TYPE=Release
   cmake --build "$LLAMA_DIR/build" --config Release -j4
 fi
 ok "llama-server at $LLAMA_BIN"
@@ -61,10 +73,10 @@ ok "llama-server at $LLAMA_BIN"
 WHISPER_DIR="$HOME/local_llms/whisper.cpp"
 WHISPER_BIN="$WHISPER_DIR/build/bin/whisper-server"
 if [[ ! -f "$WHISPER_BIN" ]]; then
-  warn "whisper.cpp not found — building from source with Metal support…"
+  warn "whisper.cpp not found — building from source…"
   mkdir -p "$HOME/local_llms"
   git clone https://github.com/ggerganov/whisper.cpp "$WHISPER_DIR"
-  cmake -B "$WHISPER_DIR/build" -S "$WHISPER_DIR" -DGGML_METAL=ON
+  cmake -B "$WHISPER_DIR/build" -S "$WHISPER_DIR" $CMAKE_GPU_FLAGS
   cmake --build "$WHISPER_DIR/build" -j4
 fi
 ok "whisper-server at $WHISPER_BIN"
@@ -96,11 +108,33 @@ VOICES_DIR="$HOME/.raju/voices"
 PIPER_MODEL="$VOICES_DIR/en_US-lessac-medium.onnx"
 mkdir -p "$VOICES_DIR"
 
-if ! python3 -c "import piper" &>/dev/null; then
-  info "Installing piper-tts via pip3…"
-  pip3 install piper-tts 2>&1 | tail -3
+# Find a python3 that has pip, preferring the one already in PATH
+PYTHON3_BIN=""
+for candidate in "$(which python3 2>/dev/null)" \
+                 /opt/homebrew/bin/python3 \
+                 /usr/local/bin/python3 \
+                 /usr/bin/python3; do
+  if [[ -x "$candidate" ]] && "$candidate" -m pip --version &>/dev/null 2>&1; then
+    PYTHON3_BIN="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$PYTHON3_BIN" ]]; then
+  warn "No python3 with pip found — Piper TTS unavailable; will use macOS 'say' for speech"
+else
+  # Install piper-tts if not already present
+  if ! "$PYTHON3_BIN" -c "import piper" &>/dev/null 2>&1; then
+    info "Installing piper-tts for $PYTHON3_BIN…"
+    "$PYTHON3_BIN" -m pip install piper-tts 2>&1 | tail -5
+  fi
+  if "$PYTHON3_BIN" -c "import piper" &>/dev/null 2>&1; then
+    echo "$PYTHON3_BIN" > "$HOME/.raju/python3_bin"
+    ok "piper-tts installed ($PYTHON3_BIN)"
+  else
+    warn "piper-tts install failed — will use macOS 'say' for speech"
+  fi
 fi
-ok "piper-tts (python3 -m piper)"
 
 if [[ ! -f "$PIPER_MODEL" ]]; then
   info "Downloading Piper voice model (en_US-lessac-medium, ~60 MB)…"
