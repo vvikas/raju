@@ -1,6 +1,6 @@
-# Raju — Your Private AI Voice Assistant for macOS
-
-> **Siri went to the cloud. Raju stayed home.**
+<p align="center">
+  <img src="assets/banner.png" alt="Raju — Your Private AI Voice Assistant for macOS" width="100%">
+</p>
 
 Hold the menubar icon → speak → get a real answer. All on your machine. All private. No API keys, no subscriptions, no internet required after install.
 
