@@ -123,7 +123,22 @@ done
 if [[ -z "$PYTHON3_BIN" ]]; then
   warn "No python3 with pip found — Piper TTS unavailable; will use macOS 'say' for speech"
 else
-  # Install piper-tts if not already present
+  # piper-tts / piper-phonemize has ABI issues with Python 3.12+.
+  # Prefer 3.11 if the detected interpreter is 3.12 or newer.
+  PY_MINOR=$("$PYTHON3_BIN" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
+  PY_MAJOR=$("$PYTHON3_BIN" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
+  if [[ "$PY_MAJOR" == "3" && "$PY_MINOR" -ge 12 ]]; then
+    warn "Python 3.$PY_MINOR detected — piper-tts may have ABI issues. Looking for Python 3.11…"
+    for alt in /opt/homebrew/bin/python3.11 /usr/local/bin/python3.11; do
+      if [[ -x "$alt" ]] && "$alt" -m pip --version &>/dev/null 2>&1; then
+        PYTHON3_BIN="$alt"
+        ok "Using $PYTHON3_BIN for piper-tts compatibility"
+        break
+      fi
+    done
+  fi
+
+  # Install piper-tts if not already importable
   if ! "$PYTHON3_BIN" -c "import piper" &>/dev/null 2>&1; then
     info "Installing piper-tts for $PYTHON3_BIN…"
     "$PYTHON3_BIN" -m pip install piper-tts 2>&1 | tail -5
@@ -133,10 +148,12 @@ else
     ok "piper-tts installed ($PYTHON3_BIN)"
   else
     warn "piper-tts install failed — will use macOS 'say' for speech"
+    PYTHON3_BIN=""   # clear so smoke test is skipped below
   fi
 fi
 
-if [[ ! -f "$PIPER_MODEL" ]]; then
+# Download voice model — need BOTH .onnx and .onnx.json; check both
+if [[ ! -f "$PIPER_MODEL" || ! -f "${PIPER_MODEL}.json" ]]; then
   info "Downloading Piper voice model (en_US-lessac-medium, ~60 MB)…"
   curl -L --progress-bar -o "$PIPER_MODEL" \
     "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx"
@@ -144,6 +161,22 @@ if [[ ! -f "$PIPER_MODEL" ]]; then
     "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json"
 fi
 ok "Piper voice model at $PIPER_MODEL"
+
+# End-to-end smoke test — verifies piper can actually synthesise audio,
+# not just that the Python import succeeds. Plays a short test phrase.
+if [[ -n "$PYTHON3_BIN" && -f "$PIPER_MODEL" ]]; then
+  info "Testing Piper TTS end-to-end (first run may take ~15s to load model)…"
+  echo "Raju is ready." | "$PYTHON3_BIN" -m piper \
+    --model "$PIPER_MODEL" --output_file /tmp/raju_smoke.wav 2>/dev/null
+  if [[ $? -eq 0 && -s /tmp/raju_smoke.wav ]]; then
+    afplay /tmp/raju_smoke.wav
+    rm -f /tmp/raju_smoke.wav
+    ok "Piper TTS working — you should have heard the test voice"
+  else
+    warn "Piper TTS smoke test failed — app will fall back to macOS 'say'"
+    warn "Try: brew install python@3.11 and re-run install.sh"
+  fi
+fi
 
 # ── 10. Compile + package as .app bundle ──────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -43,6 +43,8 @@ All inference runs on persistent local HTTP servers — models stay loaded in RA
 - **Live system queries** — CPU, RAM, disk, battery, network via a two-turn ReAct loop
 - **4 LLMs** — switch models on the fly from the menu; new model downloads in-app (~1 GB)
 - **6 Piper neural voices** — auto-downloads on first select (~60 MB each)
+- **GPU toggle** — right-click → toggle Metal GPU acceleration on/off; auto-detected at first launch (Apple Silicon = on, Intel = off)
+- **Intel Mac support** — fully functional on Intel; GPU disabled by default to avoid Metal compatibility issues
 - **Stop / Start servers** — toggle LLM or Whisper from the menu without quitting
 - **Live log** — streams in Terminal with `tail -f ~/Raju/raju.log`
 - **Launch at Login** — one-click LaunchAgent toggle
@@ -129,6 +131,8 @@ The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up
 | "Find files I modified today" | Runs `find` with `-mtime 0` |
 | "Find a file called notes.txt" | Runs `find ~/` by name |
 | "Find files containing 'budget'" | Runs `grep -ril` — full list copied to clipboard |
+| "What's the biggest video on my Mac?" | `find` across `~/` for `.mp4/.mov/.mkv/.avi`, sorted by size |
+| "What's the biggest image on my Mac?" | `find` across `~/` for `.jpg/.png/.heic`, sorted by size |
 
 **Clipboard**
 | Query | What Raju does |
@@ -209,7 +213,7 @@ Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, `curl`,
 
 ## Requirements
 
-- macOS 12+
+- macOS 12+ (Apple Silicon and Intel — GPU auto-detected)
 - Xcode Command Line Tools (`xcode-select --install`)
 - ~6 GB free disk (models + compiled binaries)
 - ~2 GB RAM headroom (4 GB recommended for Phi-3.5 Mini)
@@ -258,4 +262,5 @@ Everything runs 100% locally. No data ever leaves your machine. No telemetry, no
 
 ## Tested on
 
+- MacBook Air M2, Apple Silicon, 8 GB RAM, macOS 14.x
 - MacBook Air 2015, Intel Core i5, 8 GB RAM, macOS 12.7
