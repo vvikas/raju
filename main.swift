@@ -157,19 +157,52 @@ func runTool(_ rawCmd: String) -> String {
     let pipe = Pipe()
     task.standardOutput = pipe
     task.standardError  = pipe
-    try? task.run()
-
-    // Hard 5-second timeout
-    DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-        if task.isRunning { task.terminate() }
+    
+    // Asynchronous read so the iOS/macOS pipe buffer (64KB) doesn't fill and block the command
+    let queue = DispatchQueue(label: "com.raju.pipeReader")
+    let ioGroup = DispatchGroup()
+    var outputData = Data()
+    
+    ioGroup.enter()
+    pipe.fileHandleForReading.readabilityHandler = { fh in
+        let data = fh.availableData
+        if data.isEmpty {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            ioGroup.leave()
+        } else {
+            queue.async { outputData.append(data) }
+        }
     }
-    task.waitUntilExit()
 
-    let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    do {
+        try task.run()
+    } catch {
+        return "Error: failed to run bash command."
+    }
+
+    // Enforce 5s timeout on long-running commands
+    let timeoutWorkItem = DispatchWorkItem {
+        if task.isRunning {
+             task.terminate()
+             log("⚠️ Command timed out after 5s.")
+        }
+    }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5.0, execute: timeoutWorkItem)
+
+    // Wait safely for the process to finish, and the pipe EOF to flush
+    task.waitUntilExit()
+    _ = ioGroup.wait(timeout: .now() + 2.0)
+    timeoutWorkItem.cancel()
+    
+    queue.sync { } // Flush final async appends
+
+    let out = String(data: outputData, encoding: .utf8) ?? ""
+    
     // Clean up paths → readable names (e.g. "Claude Code" not "/Applications/Cl…")
     let cleaned = cleanToolOutput(out)
-    // Cap at 20 lines so it fits in context
-    return cleaned.components(separatedBy: "\n").prefix(20).joined(separator: "\n").trimmed
+    
+    // Cap at 50 lines so it fits in context, but truncate ultra-long lines 
+    return cleaned.components(separatedBy: "\n").prefix(50).joined(separator: "\n").trimmed
 }
 
 /// Convert absolute paths in tool output to readable names.
@@ -272,32 +305,15 @@ func transcribeViaHTTP() -> String {
     return result
 }
 
-// ── Prompt builder — wraps system+user in the right chat template ─────────────
-func buildPrompt(system: String, user: String, format: PromptFormat) -> String {
-    switch format {
-    case .chatML:
-        return "<|im_start|>system\n\(system)\n<|im_end|>\n<|im_start|>user\n\(user)\n<|im_end|>\n<|im_start|>assistant\n"
-    case .phi3:
-        return "<|system|>\n\(system)<|end|>\n<|user|>\n\(user)<|end|>\n<|assistant|>\n"
-    }
-}
-
-func stopTokens(for format: PromptFormat) -> [String] {
-    switch format {
-    case .chatML: return ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]
-    case .phi3:   return ["<|end|>", "<|endoftext|>", "<|user|>"]
-    }
-}
-
-// ── Raw llama-server call — send prompt, get completion ───────────────────────
-func callLlama(prompt: String, maxTokens: Int = 200, temperature: Double = 0.7, stop: [String] = ["<|im_end|>", "<|endoftext|>", "<|im_start|>"]) -> String {
-    guard let url = URL(string: "\(LLAMA_URL)/completion") else { return "" }
+// ── Chat API call via llama-server /v1/chat/completions ───────────────────────
+func callLlamaChat(messages: [[String: String]], maxTokens: Int = 200, temperature: Double = 0.7) -> String {
+    guard let url = URL(string: "\(LLAMA_URL)/v1/chat/completions") else { return "" }
     let body: [String: Any] = [
-        "prompt": prompt,
-        "n_predict": maxTokens,
+        "messages": messages,
+        "max_tokens": maxTokens,
         "temperature": temperature,
-        "repeat_penalty": 1.1,
-        "stop": stop
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0
     ]
     guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else { return "" }
     var req = URLRequest(url: url, timeoutInterval: 120)
@@ -310,7 +326,9 @@ func callLlama(prompt: String, maxTokens: Int = 200, temperature: Double = 0.7, 
         if let error = error { log("⚠️ LLM error: \(error.localizedDescription)") }
         else if let data = data,
                 let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                let content = json["content"] as? String {
+                let choices = json["choices"] as? [[String: Any]],
+                let message = choices.first?["message"] as? [String: Any],
+                let content = message["content"] as? String {
             result = content.trimmed
         }
         sem.signal()
@@ -347,8 +365,108 @@ func cleanLLMOutput(_ text: String) -> String {
 // ── Reformat raw bash output into clearly labelled lines for Turn 2 ───────────
 // Small LLMs struggle with fixed-width column text; named key=value pairs are
 // much easier for them to parse correctly.
+func getFullProcessNames() -> [String: String] {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/bin/bash")
+    task.arguments = ["-c", "ps -cAxo pid=,comm="]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    try? task.run()
+    task.waitUntilExit()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    guard let out = String(data: data, encoding: .utf8) else { return [:] }
+    
+    var dict = [String: String]()
+    for line in out.components(separatedBy: "\n") {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let spaceRange = trimmed.range(of: " ") else { continue }
+        let pid = String(trimmed[..<spaceRange.lowerBound])
+        let comm = String(trimmed[spaceRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if !pid.isEmpty { dict[pid] = comm }
+    }
+    return dict
+}
+
+func formatTopRAM(_ rawString: String) -> String {
+    let lower = rawString.lowercased()
+    var valueStr = lower
+    var multiplier: Double = 1.0
+    
+    if valueStr.hasSuffix("g") {
+        valueStr.removeLast()
+        multiplier = 1024.0
+    } else if valueStr.hasSuffix("m") {
+        valueStr.removeLast()
+        multiplier = 1.0
+    } else if valueStr.hasSuffix("k") {
+        valueStr.removeLast()
+        multiplier = 1.0 / 1024.0
+    }
+    
+    guard let doubleVal = Double(valueStr) else { return rawString }
+    let mbVal = doubleVal * multiplier
+    return String(format: "%.0f MB", mbVal)
+}
+
 func reformatOutput(_ raw: String, cmd: String) -> String {
-    return raw   // pass output directly to LLM without reformatting
+    let isPS = cmd.lowercased().contains("ps ")
+    let isTop = cmd.lowercased().contains("top ") || cmd.lowercased().hasPrefix("top")
+    
+    if isPS || isTop {
+        let lines = raw.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
+        guard !lines.isEmpty else { return raw }
+        
+        var reformatted = ["Processes (highest usage first):"]
+        var startIndex = 0
+        if lines[0].contains("PID") || lines[0].contains("COMM") {
+            startIndex = 1
+        }
+        
+        // Match: PID COMMAND_NAME CPU RAM(suffix or %)
+        let pattern = #"^\s*(\d+)\s+(.+?)\s+([0-9.]+)\s+([0-9.A-Za-z%]+)\s*$"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return raw }
+        
+        let isRSS = cmd.contains(",rss") || cmd.contains(" rss")
+        let fullNames = isTop ? getFullProcessNames() : [:]
+        
+        var transformedAnything = false
+        var rank = 1
+        for i in startIndex..<lines.count {
+            let line = lines[i]
+            if let match = re.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) {
+                let pid = String(line[Range(match.range(at: 1), in: line)!])
+                var name = String(line[Range(match.range(at: 2), in: line)!]).trimmed
+                
+                // Enforce proper names rather than 16-char top truncations
+                if isTop, let realName = fullNames[pid] {
+                    name = realName
+                }
+                
+                let cpu = String(line[Range(match.range(at: 3), in: line)!])
+                let ramRaw = String(line[Range(match.range(at: 4), in: line)!])
+                
+                let ramFormatted: String
+                if isRSS, let kb = Double(ramRaw) {
+                    ramFormatted = String(format: "%.0f MB", kb / 1024.0)
+                } else if isTop {
+                    ramFormatted = formatTopRAM(ramRaw)
+                } else if ramRaw.last?.isLetter == false && ramRaw.last != "%" {
+                    ramFormatted = "\(ramRaw)%"
+                } else {
+                    ramFormatted = ramRaw
+                }
+                
+                let prefix = rank == 1 ? "🏆 #1 MAXIMUM CONSUMER" : "   #\(rank)"
+                reformatted.append("\(prefix): \(name) (PID \(pid)) ---> CPU = \(cpu)%, RAM = \(ramFormatted)")
+                transformedAnything = true
+                rank += 1
+            } else {
+                reformatted.append(line)
+            }
+        }
+        return transformedAnything ? reformatted.joined(separator: "\n") : raw
+    }
+    return raw
 }
 
 // ── find command helpers — extract keyword + folder to rebuild safer fallback ──
@@ -374,74 +492,65 @@ func extractFindFolder(_ cmd: String) -> String {
 }
 
 // ── Tool-use LLM — LLM may request one bash command, result fed back ──────────
-func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
+func askLLMWithTools(query: String) -> String {
     let timeFmt = DateFormatter()
     timeFmt.dateFormat = "EEEE, MMM d yyyy, HH:mm"
     let now = timeFmt.string(from: Date())
-    let stops = stopTokens(for: format)
 
-    // Turn 1 — ask LLM to output a bash command or answer directly
+    // Turn 1 — ask LLM to output a bash command inside <bash> or answer directly
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
-    Reply with CMD: <bash command>, REMIND: <n> <unit> <msg>, or answer directly in 1-2 sentences.
-    Commands must produce short output (under 10 lines). Always pipe through head -6 or head -8.
+    You can run macOS terminal commands to answer technical questions.
 
+    IF YOU NEED TO RUN A COMMAND, output exactly like this and nothing else:
+    <bash>
+    the command here
+    </bash>
+
+    If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences. 
     Examples:
-      "what's using CPU?" → CMD: top -l 1 -o cpu -n 5 -stats command,cpu | tail -6
-      "RAM usage?" → CMD: top -l 1 -o mem -n 5 -stats command,mem | tail -6
-      "is Safari running?" → CMD: pgrep -x Safari && echo running || echo not running
-      "how many processes running?" → CMD: ps -ax | wc -l
-      "disk space?" → CMD: df -h / | tail -1
-      "battery level?" → CMD: pmset -g batt | tail -1
-      "system uptime / load?" → CMD: uptime
-      "CPU temperature / fans?" → CMD: sudo powermetrics -n 1 -i 1 --samplers smc 2>/dev/null | grep -i "temp\\|fan" | head -6
-      "network info / IP?" → CMD: ifconfig en0 | grep "inet " | head -2
-      "wifi network?" → CMD: networksetup -getairportnetwork en0
-      "active connections?" → CMD: netstat -an | grep ESTABLISHED | wc -l
-      "who's logged in?" → CMD: who
-      "open ports?" → CMD: lsof -i -P | grep LISTEN | head -8
-      "biggest file on desktop?" → CMD: ls -lhS ~/Desktop | head -6
-      "biggest file in downloads?" → CMD: ls -lhS ~/Downloads | head -6
-      "newest file in downloads?" → CMD: ls -lt ~/Downloads | head -6
-      "home folder sizes?" → CMD: du -sh ~/* 2>/dev/null | sort -rh | head -8
-      "biggest video on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.mp4" -o -iname "*.mov" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
-      "biggest image on my device?" → CMD: find ~/ -maxdepth 6 \\( -iname "*.jpg" -o -iname "*.png" -o -iname "*.heic" \\) -ls 2>/dev/null | sort -k7 -rn | head -5
-      "find file called notes on desktop?" → CMD: find ~/Desktop -iname "*notes*" 2>/dev/null | head -8
-      "find files containing budget in documents?" → CMD: grep -ril "budget" ~/Documents 2>/dev/null | head -8
-      "clipboard?" → CMD: pbpaste | head -5
-      "remind me in 5 minutes to check oven" → REMIND: 5 minutes check oven
-      "capital of France?" → Paris is the capital of France.
+      "what's using CPU?" -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
+      "what's using RAM?" -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
+      "disk space?" -> <bash>df -h /</bash>
+      "system uptime?" -> <bash>uptime</bash>
+      "ping google" -> <bash>ping -c 3 google.com</bash>
+      "find file called budget" -> <bash>find ~/Documents -iname "*budget*" 2>/dev/null | head -15</bash>
+      "remind me in 5 minutes" -> REMIND: 5 minutes reminder
+      "capital of France?" -> Paris is the capital.
     """
-    let p1 = buildPrompt(system: sys1, user: query, format: format)
-    var r1 = callLlama(prompt: p1, maxTokens: 80, temperature: 0.1, stop: stops).trimmed
-    // If output was truncated mid-token, retry with double buffer
+    
+    let msgs1: [[String: String]] = [
+        ["role": "system", "content": sys1],
+        ["role": "user", "content": query]
+    ]
+
+    var r1 = callLlamaChat(messages: msgs1, maxTokens: 80, temperature: 0.1).trimmed
+    // If output was truncated mid-token, retry with bigger buffer
     if looksLikeTruncated(r1) {
-        log("⚠️ Turn 1 looks truncated (\(r1.suffix(20))) — retrying with 120 tokens")
-        r1 = callLlama(prompt: p1, maxTokens: 120, temperature: 0.1, stop: stops).trimmed
+        log("⚠️ Turn 1 looks truncated — retrying with 150 tokens")
+        r1 = callLlamaChat(messages: msgs1, maxTokens: 150, temperature: 0.1).trimmed
     }
     r1 = cleanLLMOutput(r1)
 
-    // Check only the first line
-    let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
-    log("📝 Turn 1 raw: \(firstLine)")
+    // Check for direct reminders bypassing bash (legacy fallback)
+    if r1.hasPrefix("REMIND:") { return r1 }
 
-    // Pass reminders straight through
-    if firstLine.hasPrefix("REMIND:") { return firstLine }
-
-    // Parse CMD: <bash command>
+    // Parse <bash> command </bash> using regex
     var cmd = ""
-    if firstLine.hasPrefix("CMD:") {
-        cmd = String(firstLine.dropFirst(4)).trimmed
-        log("🔧 CMD: \(cmd)")
-    }
-
-    // Fallback: detect raw shell commands (no CMD: prefix)
-    if cmd.isEmpty {
+    let bashRegex = #"(?s)<bash>\s*(.*?)\s*</bash>"# // (?s) makes . match newlines
+    if let re = try? NSRegularExpression(pattern: bashRegex, options: []),
+       let match = re.firstMatch(in: r1, range: NSRange(r1.startIndex..., in: r1)),
+       let range = Range(match.range(at: 1), in: r1) {
+        cmd = String(r1[range]).trimmed
+        log("🔧 <bash> tag detected: \(cmd)")
+    } else {
+        // Fallback: detect raw shell commands if it still forgot tags
+        let firstLine = r1.components(separatedBy: "\n").first?.trimmed ?? ""
         let shellPrefixes = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
                              "ls ", "du ", "find ", "grep ", "pbpaste", "networksetup", "defaults "]
         if shellPrefixes.contains(where: { firstLine.hasPrefix($0) }) {
             cmd = firstLine
-            log("⚠️ LLM skipped CMD: prefix — treating as command: \(cmd)")
+            log("⚠️ LLM skipped <bash> tags — treating as command: \(cmd)")
         }
     }
 
@@ -452,25 +561,22 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
     var toolOut = runTool(cmd)
     log("🔧 Tool output (\(toolOut.count)c): \(toolOut.prefix(200))")
 
-    // Retry if the LLM's command produced useless output (e.g. just a header line,
-    // or the model added extra awk/sort pipes that ate all the data).
-    let usefulLines = toolOut.components(separatedBy: "\n")
-        .filter { !$0.trimmed.isEmpty }
+    // Retry if the LLM's command produced useless output
+    let usefulLines = toolOut.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
     if usefulLines.count < 2 || toolOut.trimmed.count < 20 {
-        // Build a known-good fallback: strip extra pipes for non-ps commands,
-        // use canonical ps command for process queries.
         let fallback: String
-        if cmd.lowercased().contains("ps ") {
-            // Preserve the sort flag the LLM picked; fall back to -r if none present
-            let sortFlag = cmd.contains("-m") ? "-m" : "-r"
-            fallback = "ps -Axo pid,comm,%cpu,%mem \(sortFlag) | head -8"
+        if cmd.lowercased().contains("top ") || cmd.lowercased().hasPrefix("top") {
+            let sortFlag = cmd.contains("cpu") ? "cpu" : "mem"
+            fallback = "top -l 1 -o \(sortFlag) -n 15 -stats pid,command,cpu,mem | tail -n +13"
+        } else if cmd.lowercased().contains("ps ") {
+            let sortPipe = cmd.contains("nrk4") || cmd.contains("-m") ? "| sort -nrk4" : "| sort -nrk3"
+            fallback = "ps -cAxo pid,comm,%cpu,rss \(sortPipe) | head -15"
         } else if cmd.hasPrefix("find ") || cmd.contains(" find ") {
-            // Rebuild with case-insensitive wildcard to fix "*.X*" style mistakes
             if let kw = extractFindKeyword(cmd) {
                 let folder = extractFindFolder(cmd)
                 fallback = "find \(folder) -iname \"*\(kw)*\" 2>/dev/null"
             } else {
-                fallback = cmd  // keyword not parseable; nothing to improve
+                fallback = cmd
             }
         } else {
             fallback = cmd.components(separatedBy: "|").first?.trimmed ?? cmd
@@ -484,13 +590,18 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
 
     // Reformat raw columnar text into clearly labelled lines for the LLM.
     let formatted = reformatOutput(toolOut, cmd: cmd)
-    log("📊 Formatted (\(formatted.count)c): \(formatted.prefix(300))")
+    if formatted != toolOut {
+        log("📊 Formatted (\(formatted.count)c): \(formatted.prefix(300))")
+    }
 
-    // Trim to 20 non-empty lines max to save context.
+    // Trim to 50 non-empty lines max (increased for better context)
     let allLines = formatted.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
-    let topLines = allLines.prefix(20).joined(separator: "\n")
+    let topLines = allLines.prefix(50).enumerated().map { i, line in
+        return line.count > 200 ? String(line.prefix(200)) + "..." : line
+    }.joined(separator: "\n")
+    
     let dataForLLM = topLines.isEmpty
-        ? "The command ran but found no matching results. Tell the user nothing was found."
+        ? "The command ran but found no matching results / empty output."
         : topLines
 
     // If the result is a list (>4 lines), copy the raw output to clipboard.
@@ -500,32 +611,46 @@ func askLLMWithTools(query: String, format: PromptFormat = .chatML) -> String {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(toolOut, forType: .string)
         }
-        clipboardNote = "The full list (\(allLines.count) items) has been copied to the clipboard.\n"
+        clipboardNote = "[The full list (\(allLines.count) items) has been automatically copied to the user's clipboard]\n"
         log("📋 Copied \(allLines.count)-line result to clipboard")
     }
 
-    // Turn 2 — completely fresh prompt so small models don't get confused by conversation history
+    // Turn 2 — ask LLM to interpret the results
     let sys2 = """
-    You are Raju, a macOS voice assistant. Answer in 1-3 short spoken sentences.
-    The data below is the output of a command run to answer the question.
-    Report what the data shows. Use ONLY the data — do not invent anything.
-    If the data shows no results, say clearly that nothing was found.
+    You are Raju, a macOS voice assistant. 
+    You executed a bash command to answer the user's question, and the results are provided below.
+    Answer in 1-3 short spoken sentences summarizing what the data shows.
+    Use ONLY the data — do not invent anything.
+    If the data is empty or indicates an error, say clearly what went wrong or that nothing was found.
     """
-    let usr2 = "Command output (from `\(cmd)`):\n\(clipboardNote)\(dataForLLM)\n\nQuestion: \(query)"
-    let p2 = buildPrompt(system: sys2, user: usr2, format: format)
-    let r2 = cleanLLMOutput(callLlama(prompt: p2, maxTokens: 150, stop: stops))
+    
+    let usr2 = """
+    Question: \(query)
+    
+    Command executed: `\(cmd)`
+    
+    Output:
+    \(clipboardNote)\(dataForLLM)
+    """
+    
+    let msgs2: [[String: String]] = [
+        ["role": "system", "content": sys2],
+        ["role": "user", "content": usr2]
+    ]
+    
+    let r2 = cleanLLMOutput(callLlamaChat(messages: msgs2, maxTokens: 150))
 
-    // Safety net: never speak a CMD: line or a raw shell command
+    // Safety net: never speak a raw shell command back
     let shellPrefixes = ["ps ", "df ", "vm_stat", "pmset ", "ifconfig", "uptime",
                          "ls ", "du ", "find ", "grep ", "pbpaste", "networksetup", "defaults "]
     let r2LooksLikeShell = shellPrefixes.contains(where: { r2.hasPrefix($0) })
                         || (r2.contains(" | ") && r2.count < 200 && !r2.contains("?"))
-    if r2.hasPrefix("CMD:") || r2LooksLikeShell {
+                        || r2.hasPrefix("<bash>") || r2.hasSuffix("</bash>")
+    if r2LooksLikeShell {
         let rest = r2.components(separatedBy: "\n").dropFirst().joined(separator: "\n").trimmed
         return rest.isEmpty ? "I ran the command but couldn't summarise the results." : rest
     }
 
-    // Detect refusal phrases ("Sorry, but I can't assist", "I'm not able to", etc.)
     let refusalPhrases = ["can't assist", "cannot assist", "i'm not able", "i am not able",
                           "i'm unable", "i cannot help", "not able to help", "sorry, but i"]
     let r2Low = r2.lowercased()
@@ -670,7 +795,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         llamaProcess!.executableURL = URL(fileURLWithPath: LLAMA_SERVER)
         llamaProcess!.arguments = ["-m", model.path, "-ngl", useGPU ? "999" : "0",
                                    "--port", "\(LLAMA_PORT)", "--host", "127.0.0.1",
-                                   "-n", "200", "--log-disable"]
+                                   "-c", "4096", "-n", "400", "--log-disable"]
         llamaProcess!.standardOutput = Pipe()
         llamaProcess!.standardError  = Pipe()
         try? llamaProcess!.run()
@@ -1095,7 +1220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.state = .thinking
             log("🤔 Asking LLM (tool-use mode)…")
             let t1    = Date()
-            let reply = askLLMWithTools(query: query, format: MODELS[self.currentModelIndex].format)
+            let reply = askLLMWithTools(query: query)
             let lt    = String(format: "%.1f", Date().timeIntervalSince(t1))
             self.lastReply = reply.isEmpty ? "Sorry, I didn't get that." : reply
             log("💬 LLM reply in \(lt)s → \"\(self.lastReply)\"")

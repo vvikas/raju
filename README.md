@@ -193,11 +193,13 @@ Falls back to macOS `say` if Piper is not installed.
 For system queries, Raju uses a two-turn ReAct loop:
 
 **Turn 1** — LLM decides whether to answer directly or generate a shell command:
-```
-CMD: ps -Axo pid,args,%cpu,%mem -r | head -8
+```xml
+<bash>
+ps -Axo pid,args,%cpu,%mem -r | head -15
+</bash>
 ```
 
-**Turn 2** — Raju runs the command, reformats the output into labeled lines, feeds it back, and the LLM gives a spoken answer:
+**Turn 2** — Raju runs the command, safely reads the output using a non-blocking stream to prevent truncation, feeds it back, and the LLM gives a spoken answer:
 ```
 llama-server is using the most CPU at 66%, followed by Claude Helper at 28%.
 ```

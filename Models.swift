@@ -1,11 +1,5 @@
 import Foundation
 
-// ── Prompt format — each model family uses different chat tokens ──────────────
-enum PromptFormat {
-    case chatML   // <|im_start|>system … <|im_end|>   (Qwen2, Qwen2.5-Coder, SmolLM2)
-    case phi3     // <|system|> … <|end|>              (Phi-3.5)
-}
-
 // ── Available LLM models ──────────────────────────────────────────────────────
 // Add a new model here to make it appear in the menu.
 // Set url to a direct GGUF download link to allow in-app downloading (like voices).
@@ -13,7 +7,6 @@ enum PromptFormat {
 struct LLMModel {
     let name: String
     let file: String
-    let format: PromptFormat
     let url: String?   // HuggingFace direct download URL, nil if pre-installed
     var path: String { "\(HOME)/local_llms/llama.cpp/models/\(file)" }
     var isDownloaded: Bool { FileManager.default.fileExists(atPath: path) }
@@ -22,22 +15,18 @@ struct LLMModel {
 let MODELS: [LLMModel] = [
     LLMModel(name: "Qwen2 1.5B",
              file: "qwen2-1.5b.gguf",
-             format: .chatML,
              url: nil),   // pre-installed by install.sh
 
     LLMModel(name: "Qwen2.5-Coder 1.5B",
              file: "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
-             format: .chatML,
              url: "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"),
 
     LLMModel(name: "SmolLM2 1.7B",
              file: "smollm2-1.7b-instruct-q4_k_m.gguf",
-             format: .chatML,
              url: "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf"),
 
     LLMModel(name: "Phi-3.5 Mini 3.8B",
              file: "phi-3.5-mini-instruct-q4.gguf",
-             format: .phi3,
              url: "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"),
 ]
 
