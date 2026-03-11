@@ -38,7 +38,7 @@ let MODELS: [LLMModel] = [
     LLMModel(name: "Phi-3.5 Mini 3.8B",
              file: "phi-3.5-mini-instruct-q4.gguf",
              format: .phi3,
-             url: "https://huggingface.co/microsoft/Phi-3.5-mini-instruct-gguf/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"),
+             url: "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf"),
 ]
 
 // ── Available Piper voices ────────────────────────────────────────────────────
