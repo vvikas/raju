@@ -16,6 +16,14 @@ echo "  Raju — Local Voice Assistant — Installer"
 echo "══════════════════════════════════════════"
 echo ""
 
+# ── 0. Fix PATH — pick up Homebrew regardless of shell config ─────────────────
+for brew_prefix in /opt/homebrew /usr/local; do
+  if [[ -x "$brew_prefix/bin/brew" ]]; then
+    export PATH="$brew_prefix/bin:$brew_prefix/sbin:$PATH"
+    break
+  fi
+done
+
 # ── 1. macOS check + GPU detection ────────────────────────────────────────────
 if [[ "$(uname)" != "Darwin" ]]; then
   fail "Raju requires macOS."
@@ -47,10 +55,23 @@ ok "swiftc $(swiftc --version 2>&1 | head -1 | awk '{print $4}')"
 if ! command -v brew &>/dev/null; then
   warn "Homebrew not found — installing…"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  # Re-evaluate PATH so brew is available for the rest of this script
+  for brew_prefix in /opt/homebrew /usr/local; do
+    if [[ -x "$brew_prefix/bin/brew" ]]; then
+      export PATH="$brew_prefix/bin:$brew_prefix/sbin:$PATH"
+      break
+    fi
+  done
 fi
 ok "Homebrew $(brew --version | head -1 | awk '{print $2}')"
 
-# ── 4. sox (mic recording) ────────────────────────────────────────────────────
+# ── 4. cmake + sox ────────────────────────────────────────────────────────────
+if ! command -v cmake &>/dev/null; then
+  info "Installing cmake…"
+  brew install cmake
+fi
+ok "cmake $(cmake --version | head -1 | awk '{print $3}')"
+
 if ! command -v rec &>/dev/null; then
   info "Installing sox…"
   brew install sox
@@ -63,7 +84,9 @@ LLAMA_BIN="$LLAMA_DIR/build/bin/llama-server"
 if [[ ! -f "$LLAMA_BIN" ]]; then
   warn "llama.cpp not found — building from source…"
   mkdir -p "$HOME/local_llms"
-  git clone https://github.com/ggerganov/llama.cpp "$LLAMA_DIR"
+  # Remove incomplete clone from a previous failed run
+  [[ -d "$LLAMA_DIR" && ! -f "$LLAMA_DIR/.git/HEAD" ]] && rm -rf "$LLAMA_DIR"
+  [[ -d "$LLAMA_DIR" ]] || git clone https://github.com/ggerganov/llama.cpp "$LLAMA_DIR"
   cmake -B "$LLAMA_DIR/build" -S "$LLAMA_DIR" $CMAKE_GPU_FLAGS -DCMAKE_BUILD_TYPE=Release
   cmake --build "$LLAMA_DIR/build" --config Release -j4
 fi
@@ -75,7 +98,9 @@ WHISPER_BIN="$WHISPER_DIR/build/bin/whisper-server"
 if [[ ! -f "$WHISPER_BIN" ]]; then
   warn "whisper.cpp not found — building from source…"
   mkdir -p "$HOME/local_llms"
-  git clone https://github.com/ggerganov/whisper.cpp "$WHISPER_DIR"
+  # Remove incomplete clone from a previous failed run
+  [[ -d "$WHISPER_DIR" && ! -f "$WHISPER_DIR/.git/HEAD" ]] && rm -rf "$WHISPER_DIR"
+  [[ -d "$WHISPER_DIR" ]] || git clone https://github.com/ggerganov/whisper.cpp "$WHISPER_DIR"
   cmake -B "$WHISPER_DIR/build" -S "$WHISPER_DIR" $CMAKE_GPU_FLAGS
   cmake --build "$WHISPER_DIR/build" -j4
 fi
@@ -138,10 +163,13 @@ else
     done
   fi
 
-  # Install piper-tts if not already importable
+  # Install piper-tts and all required dependencies
   if ! "$PYTHON3_BIN" -c "import piper" &>/dev/null 2>&1; then
     info "Installing piper-tts for $PYTHON3_BIN…"
-    "$PYTHON3_BIN" -m pip install piper-tts 2>&1 | tail -5
+    "$PYTHON3_BIN" -m pip install piper-tts pathvalidate 2>&1 | tail -5
+  else
+    # Ensure pathvalidate is present even if piper was already installed
+    "$PYTHON3_BIN" -m pip install --quiet pathvalidate 2>/dev/null || true
   fi
   if "$PYTHON3_BIN" -c "import piper" &>/dev/null 2>&1; then
     echo "$PYTHON3_BIN" > "$HOME/.raju/python3_bin"
@@ -166,9 +194,12 @@ ok "Piper voice model at $PIPER_MODEL"
 # not just that the Python import succeeds. Plays a short test phrase.
 if [[ -n "$PYTHON3_BIN" && -f "$PIPER_MODEL" ]]; then
   info "Testing Piper TTS end-to-end (first run may take ~15s to load model)…"
+  set +e  # don't abort on piper failure — it's non-fatal
   echo "Raju is ready." | "$PYTHON3_BIN" -m piper \
     --model "$PIPER_MODEL" --output_file /tmp/raju_smoke.wav 2>/dev/null
-  if [[ $? -eq 0 && -s /tmp/raju_smoke.wav ]]; then
+  SMOKE_EXIT=$?
+  set -e
+  if [[ $SMOKE_EXIT -eq 0 && -s /tmp/raju_smoke.wav ]]; then
     afplay /tmp/raju_smoke.wav
     rm -f /tmp/raju_smoke.wav
     ok "Piper TTS working — you should have heard the test voice"

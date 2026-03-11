@@ -7,7 +7,12 @@ let HOME           = FileManager.default.homeDirectoryForCurrentUser.path
 let WHISPER_SERVER = "\(HOME)/local_llms/whisper.cpp/build/bin/whisper-server"
 let WHISPER_MODEL  = "\(HOME)/local_llms/whisper.cpp/models/ggml-small.bin"
 let LLAMA_SERVER   = "\(HOME)/local_llms/llama.cpp/build/bin/llama-server"
-let REC_BIN        = "/usr/local/bin/rec"
+let REC_BIN: String = {
+    for p in ["/opt/homebrew/bin/rec", "/usr/local/bin/rec"] {
+        if FileManager.default.fileExists(atPath: p) { return p }
+    }
+    return "/usr/local/bin/rec"
+}()
 let PYTHON3_BIN: String = {
     // Read path written by installer; fall back to common locations
     let configPath = "\(HOME)/.raju/python3_bin"
@@ -22,7 +27,7 @@ let PYTHON3_BIN: String = {
 let PIPER_OUT      = "/tmp/raju_tts.wav"
 let SAY_BIN        = "/usr/bin/say"
 let AUDIO_FILE     = "/tmp/raju_input.wav"
-let LOG_FILE       = "\(HOME)/Raju/raju.log"
+let LOG_FILE       = "\(HOME)/.raju/raju.log"
 let VOICES_DIR     = "\(HOME)/.raju/voices"
 
 // Models.swift — LLMModel, MODELS, PiperVoice, VOICES
