@@ -189,8 +189,16 @@ ok "Raju compiled"
 
 info "Creating Raju.app bundle in ~/Applications…"
 mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources"
 cp "$SCRIPT_DIR/Raju" "$APP_BIN"
 chmod +x "$APP_BIN"
+
+# Bundle app icon if present
+ICNS="$SCRIPT_DIR/assets/Raju.icns"
+if [[ -f "$ICNS" ]]; then
+  cp "$ICNS" "$APP/Contents/Resources/Raju.icns"
+  ok "App icon bundled"
+fi
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -200,6 +208,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key>              <string>Raju</string>
   <key>CFBundleIdentifier</key>        <string>com.raju.app</string>
   <key>CFBundleExecutable</key>        <string>Raju</string>
+  <key>CFBundleIconFile</key>          <string>Raju</string>
   <key>CFBundleVersion</key>           <string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>CFBundlePackageType</key>       <string>APPL</string>
