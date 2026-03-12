@@ -97,8 +97,17 @@ func askLLMWithTools(query: String) -> String {
       "find file called budget" -> <bash>find ~/Documents -iname "*budget*" 2>/dev/null | head -15</bash>
       "is safari running?" -> <bash>pgrep -il "safari"</bash>
       "wifi network name?" -> <bash>networksetup -getairportnetwork en0</bash>
-      "remind me in 5 minutes" -> REMIND: 5 minutes reminder
       "capital of France?" -> Paris is the capital.
+
+    FOR REMINDERS — CRITICAL: Do NOT use osascript, AppleScript, or any bash command.
+    Always respond with ONLY this exact format (nothing else):
+      REMIND: <seconds_or_duration> <message>
+    Examples:
+      "remind me in 5 minutes" -> REMIND: 5 minutes drink water
+      "remind me in 5 minutes to drink water" -> REMIND: 5 minutes drink water
+      "set a reminder for 30 minutes to take a break" -> REMIND: 30 minutes take a break
+      "remind me in 1 hour to call Vikas" -> REMIND: 1 hour call Vikas
+      "remind me in 10 seconds" -> REMIND: 10 seconds Time is up
     """
     
     let msgs1: [[String: String]] = [
