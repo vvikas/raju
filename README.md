@@ -188,14 +188,17 @@ Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, `curl`,
 
 ## Test Suite
 
-Raju ships a Python test suite (`test_llm.py`) that measures how accurately a given LLM generates correct macOS bash commands for common user queries. GitHub Actions automatically runs the suite against **two models** on every push, so you can see at a glance how well different models handle the built-in prompt.
+Raju ships a Python test suite (`test_llm.py`) that measures how accurately a given LLM generates correct macOS bash commands for common user queries. GitHub Actions automatically runs the suite against **two models** on every push. After each run, the pass percentage is written to `ci-results/<model>.json` and the live badge at the top of this README updates automatically.
 
 ### How it works
 
 1. The test script sends each user query to the local `llama-server` HTTP API using the same system prompt that the app uses.
 2. It extracts the `<bash>...</bash>` block from the LLM's reply.
 3. A purpose-written validator (not a keyword match — actual logic) checks whether the generated command would correctly fulfil the request on macOS.
-4. Results are printed with ✅ / ❌ per test. The CI job fails if the pass rate drops below **70%**.
+4. Results are printed with ✅ / ❌ per test and a final score like **`82% (9/11)`**.
+5. The CI job fails if the pass rate drops below **70%**.
+
+**Badge colours:** 🟢 ≥ 80% · 🟡 60–79% · 🔴 < 60%
 
 ### Running locally
 

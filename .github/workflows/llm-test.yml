@@ -82,5 +82,11 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ci-results/
-          git diff --staged --quiet || git commit -m "ci: update badge for ${{ matrix.model.name }} [skip ci]"
-          git push origin main
+          git diff --staged --quiet && exit 0   # nothing changed, skip commit
+          git commit -m "ci: update badge for ${{ matrix.model.name }} [skip ci]"
+          # Retry loop handles the race where both model jobs push at the same time
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push origin main && break
+            echo "Push attempt $i failed, retrying..."
+            sleep 5
+          done
