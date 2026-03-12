@@ -1,0 +1,55 @@
+name: LLM Test Suite
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  test-llm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Setup Model Directory
+        run: mkdir -p models
+          
+      - name: Cache LLM Model
+        id: cache-model
+        uses: actions/cache@v4
+        with:
+          path: models/qwen2-1_5b-instruct-q4_k_m.gguf
+          key: llama-model-qwen2-1.5b-q4_k_m
+          
+      - name: Download Qwen2 1.5B Model
+        if: steps.cache-model.outputs.cache-hit != 'true'
+        run: |
+          wget -q --show-progress https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf -O models/qwen2-1_5b-instruct-q4_k_m.gguf
+
+      - name: Start LLaMA Server
+        run: |
+          # Start the llama.cpp server using the official ghcr image
+          docker run -d --name llama-server --network host \
+            -v ${{ github.workspace }}/models:/models \
+            ghcr.io/ggerganov/llama.cpp:server \
+            -m /models/qwen2-1_5b-instruct-q4_k_m.gguf \
+            -c 2048 --host 127.0.0.1 --port 8080
+          
+          echo "Waiting for llama-server to boot the model..."
+          # the container health check URL is /health for llama-server
+          # wait until the health endpoint returns HTTP 200
+          timeout 120 bash -c 'until [[ "$(curl -s -o /dev/null -w ''%{http_code}'' http://127.0.0.1:8080/health)" == "200" ]]; do sleep 2; done'
+          echo "LLaMA server is ready."
+          docker logs llama-server
+          
+      - name: Run Python Test Suite
+        run: |
+          python3 test_llm.py
