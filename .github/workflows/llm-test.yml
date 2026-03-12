@@ -9,6 +9,8 @@ on:
 jobs:
   test-llm:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to commit ci-results/ badge files back
     strategy:
       fail-fast: false   # run all models even if one fails
       matrix:
@@ -73,3 +75,12 @@ jobs:
 
       - name: Run Test Suite — ${{ matrix.model.name }}
         run: python3 test_llm.py --model "${{ matrix.model.name }}"
+
+      - name: Commit badge result back to repo
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ci-results/
+          git diff --staged --quiet || git commit -m "ci: update badge for ${{ matrix.model.name }} [skip ci]"
+          git push origin main

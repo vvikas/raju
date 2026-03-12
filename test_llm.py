@@ -162,6 +162,22 @@ def run_tests(model_name="Unknown model"):
     print(f"{result_icon} RESULT [{model_name}]: {passed}/{total} ({pct:.1f}%) passed")
     print("="*50)
 
+    # Write shields.io endpoint JSON so the README badge shows a live percentage
+    # File lives at ci-results/<safe_model_name>.json in the repo
+    safe_name = model_name.lower().replace(" ", "-").replace(".", "_")
+    os.makedirs("ci-results", exist_ok=True)
+    color = "brightgreen" if pct >= 80 else "yellow" if pct >= 60 else "red"
+    badge = {
+        "schemaVersion": 1,
+        "label": model_name,
+        "message": f"{pct:.0f}% ({passed}/{total})",
+        "color": color
+    }
+    badge_path = f"ci-results/{safe_name}.json"
+    with open(badge_path, "w") as f:
+        json.dump(badge, f)
+    print(f"📄 Badge JSON written to {badge_path}")
+
     # Exit with non-zero if below threshold so CI job shows as failed
     if pct < 70:
         sys.exit(1)

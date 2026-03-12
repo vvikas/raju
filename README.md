@@ -10,10 +10,10 @@ Hold the menubar icon → speak → get a real answer. All on your machine. All 
 
 **CI — Prompt Pass Rate (per model)**
 
-| Model | CI Status |
+| Model | Pass Rate |
 |-------|-----------|
-| Qwen2 1.5B | [![Test — Qwen2 1.5B](https://github.com/vvikas/raju/actions/workflows/llm-test.yml/badge.svg)](https://github.com/vvikas/raju/actions/workflows/llm-test.yml) |
-| SmolLM2 1.7B | [![Test — SmolLM2 1.7B](https://github.com/vvikas/raju/actions/workflows/llm-test.yml/badge.svg)](https://github.com/vvikas/raju/actions/workflows/llm-test.yml) |
+| Qwen2 1.5B | [![Qwen2 1.5B](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/vvikas/raju/main/ci-results/qwen2-1_5b.json)](https://github.com/vvikas/raju/actions/workflows/llm-test.yml) |
+| SmolLM2 1.7B | [![SmolLM2 1.7B](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/vvikas/raju/main/ci-results/smollm2-1_7b.json)](https://github.com/vvikas/raju/actions/workflows/llm-test.yml) |
 
 ---
 
