@@ -2,6 +2,8 @@ import json
 import urllib.request
 import re
 import os
+import argparse
+import sys
 
 # We will test the local LLM running on port 8080
 LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
@@ -116,10 +118,12 @@ TEST_CASES = [
     }
 ]
 
-def run_tests():
-    print("🚀 Starting LLM robustness test suite...")
-    print("Using System Prompt (Length):", len(SYS_PROMPT))
-    print("-" * 50)
+def run_tests(model_name="Unknown model"):
+    print("="*50)
+    print(f"  🧪 Raju LLM Test Suite")
+    print(f"  Model : {model_name}")
+    print(f"  Prompt: {len(SYS_PROMPT)} chars")
+    print("="*50)
     
     passed = 0
     total = len(TEST_CASES)
@@ -152,9 +156,18 @@ def run_tests():
             if cmd:
                 print(f"   Cmd was: {cmd}")
                 
-    print("\n" + "=" * 50)
-    print(f"🏆 Results: {passed}/{total} ({(passed/total)*100:.1f}%) passed")
-    print("=" * 50)
+    print("\n" + "="*50)
+    pct = (passed/total)*100
+    result_icon = "✅" if pct >= 70 else "❌"
+    print(f"{result_icon} RESULT [{model_name}]: {passed}/{total} ({pct:.1f}%) passed")
+    print("="*50)
+
+    # Exit with non-zero if below threshold so CI job shows as failed
+    if pct < 70:
+        sys.exit(1)
 
 if __name__ == "__main__":
-    run_tests()
+    parser = argparse.ArgumentParser(description="Raju LLM test suite")
+    parser.add_argument("--model", default="Unknown", help="Model name label for output")
+    args = parser.parse_args()
+    run_tests(model_name=args.model)

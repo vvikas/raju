@@ -8,6 +8,13 @@ Hold the menubar icon → speak → get a real answer. All on your machine. All 
 |:----:|:--------:|
 | ![Raju menu](assets/menu.png) | ![Raju log](assets/log.png) |
 
+**CI — Prompt Pass Rate (per model)**
+
+| Model | CI Status |
+|-------|-----------|
+| Qwen2 1.5B | [![Test — Qwen2 1.5B](https://github.com/vvikas/raju/actions/workflows/llm-test.yml/badge.svg)](https://github.com/vvikas/raju/actions/workflows/llm-test.yml) |
+| SmolLM2 1.7B | [![Test — SmolLM2 1.7B](https://github.com/vvikas/raju/actions/workflows/llm-test.yml/badge.svg)](https://github.com/vvikas/raju/actions/workflows/llm-test.yml) |
+
 ---
 
 ## What makes it different
@@ -176,6 +183,54 @@ Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, `curl`,
 - Xcode Command Line Tools (`xcode-select --install`)
 - ~6 GB free disk (models + compiled binaries)
 - ~2 GB RAM headroom (4 GB recommended for Phi-3.5 Mini)
+
+---
+
+## Test Suite
+
+Raju ships a Python test suite (`test_llm.py`) that measures how accurately a given LLM generates correct macOS bash commands for common user queries. GitHub Actions automatically runs the suite against **two models** on every push, so you can see at a glance how well different models handle the built-in prompt.
+
+### How it works
+
+1. The test script sends each user query to the local `llama-server` HTTP API using the same system prompt that the app uses.
+2. It extracts the `<bash>...</bash>` block from the LLM's reply.
+3. A purpose-written validator (not a keyword match — actual logic) checks whether the generated command would correctly fulfil the request on macOS.
+4. Results are printed with ✅ / ❌ per test. The CI job fails if the pass rate drops below **70%**.
+
+### Running locally
+
+```bash
+# Run with the currently loaded model (llama-server must be running on :8080)
+python3 test_llm.py
+
+# Label the output with a model name
+python3 test_llm.py --model "Qwen2 1.5B"
+```
+
+### How to add a new test case
+
+Open `test_llm.py` and append an entry to the `TEST_CASES` list:
+
+```python
+{
+    "query": "how many cores does my CPU have?",
+    "validator": lambda cmd: cmd and "sysctl" in cmd and "cpu" in cmd.lower()
+},
+```
+
+The validator receives the exact bash command the LLM generated. Return `True` if the command is logically correct for macOS, `False` otherwise. Keep validators concise and focused — avoid hardcoding exact command strings.
+
+### How to add a new model to CI
+
+Open `.github/workflows/llm-test.yml` and add an entry to the `matrix.model` list:
+
+```yaml
+- name: "Phi-3.5 Mini"
+  filename: "phi-3.5-mini-instruct-q4_k_m.gguf"
+  url: "https://huggingface.co/.../phi-3.5-mini-instruct-q4_k_m.gguf"
+```
+
+GitHub Actions will then run a parallel job for the new model on every push, and a new badge row can be added to the table at the top of this README.
 
 ---
 

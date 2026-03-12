@@ -9,6 +9,18 @@ on:
 jobs:
   test-llm:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # run all models even if one fails
+      matrix:
+        model:
+          - name: "Qwen2 1.5B"
+            filename: "qwen2-1_5b-instruct-q4_k_m.gguf"
+            url: "https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf"
+          - name: "SmolLM2 1.7B"
+            filename: "smollm2-1.7b-instruct-q4_k_m.gguf"
+            url: "https://huggingface.co/bartowski/SmolLM2-1.7B-Instruct-GGUF/resolve/main/SmolLM2-1.7B-Instruct-Q4_K_M.gguf"
+
+    name: Test — ${{ matrix.model.name }}
 
     steps:
       - name: Checkout Code
@@ -27,7 +39,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/llama.cpp/build
-          key: llama-cpp-build-${{ runner.os }}-v1
+          key: llama-cpp-build-${{ runner.os }}-v2
 
       - name: Build llama-server from source
         if: steps.cache-llama.outputs.cache-hit != 'true'
@@ -36,30 +48,28 @@ jobs:
           cmake -B ~/llama.cpp/build -S ~/llama.cpp -DGGML_METAL=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build ~/llama.cpp/build --config Release --target llama-server -j4
 
-      - name: Cache LLM Model
+      - name: Cache Model — ${{ matrix.model.name }}
         id: cache-model
         uses: actions/cache@v4
         with:
-          path: ~/models/qwen2-1_5b-instruct-q4_k_m.gguf
-          key: llama-model-qwen2-1.5b-q4_k_m
+          path: ~/models/${{ matrix.model.filename }}
+          key: model-${{ matrix.model.filename }}
 
-      - name: Download Qwen2 1.5B Model
+      - name: Download Model — ${{ matrix.model.name }}
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/models
-          wget -q --show-progress \
-            https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf \
-            -O ~/models/qwen2-1_5b-instruct-q4_k_m.gguf
+          wget -q --show-progress "${{ matrix.model.url }}" \
+            -O ~/models/${{ matrix.model.filename }}
 
-      - name: Start llama-server
+      - name: Start llama-server with ${{ matrix.model.name }}
         run: |
           ~/llama.cpp/build/bin/llama-server \
-            -m ~/models/qwen2-1_5b-instruct-q4_k_m.gguf \
+            -m ~/models/${{ matrix.model.filename }} \
             -c 2048 --host 127.0.0.1 --port 8080 &
-
-          echo "Waiting for llama-server to be ready..."
+          echo "Waiting for llama-server..."
           timeout 180 bash -c 'until curl -sf http://127.0.0.1:8080/health; do sleep 3; done'
-          echo "llama-server is ready!"
+          echo "Ready!"
 
-      - name: Run LLM Test Suite
-        run: python3 test_llm.py
+      - name: Run Test Suite — ${{ matrix.model.name }}
+        run: python3 test_llm.py --model "${{ matrix.model.name }}"
