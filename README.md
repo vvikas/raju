@@ -104,57 +104,12 @@ The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up
 
 ### What you can ask
 
-**System & Performance**
-| Query | What Raju does |
-|-------|---------------|
-| "What's using the most CPU?" | Runs `ps`, speaks top processes |
-| "What's eating my RAM?" | Runs `ps -m`, speaks top memory users |
-| "How much disk space do I have?" | Runs `df -h` |
-| "What's my battery level?" | Runs `pmset -g batt` |
-| "How long has my Mac been on?" | Runs `uptime` |
-
-**Apps & Processes**
-| Query | What Raju does |
-|-------|---------------|
-| "Is Spotify running?" | Checks running processes by name |
-
-**Network**
-| Query | What Raju does |
-|-------|---------------|
-| "What's my IP address?" | Runs `ifconfig en0` |
-| "What WiFi network am I on?" | Runs `networksetup -getairportnetwork en0` |
-
-**Files & Search**
-| Query | What Raju does |
-|-------|---------------|
-| "What's the biggest file on my Desktop?" | Runs `ls -lhS ~/Desktop` |
-| "What's the newest file in Downloads?" | Runs `ls -lt ~/Downloads` |
-| "What's taking up space in my home folder?" | Runs `du -sh ~/*` |
-| "Find files I modified today" | Runs `find` with `-mtime 0` |
-| "Find a file called notes.txt" | Runs `find ~/` by name |
-| "Find files containing 'budget'" | Runs `grep -ril` — full list copied to clipboard |
-| "What's the biggest video on my Mac?" | `find` across `~/` for `.mp4/.mov/.mkv/.avi`, sorted by size |
-| "What's the biggest image on my Mac?" | `find` across `~/` for `.jpg/.png/.heic`, sorted by size |
-
-**Clipboard**
-| Query | What Raju does |
-|-------|---------------|
-| "What's in my clipboard?" | Reads clipboard via `pbpaste` |
-
-**Reminders**
-| Query | What Raju does |
-|-------|---------------|
-| "Remind me in 10 minutes to check the oven" | Sets a timer — speaks reminder aloud when it fires |
-| "Remind me in 2 hours to take a break" | Same, any duration in seconds / minutes / hours |
-
-**General Knowledge**
-| Query | What Raju does |
-|-------|---------------|
-| "What time is it?" / "What day is today?" | Answers directly from system time |
-| "How many MB is 2.3 GB?" | LLM computes directly |
-| "What's the capital of France?" | LLM answers directly |
-
-> **Tip:** Long results (file lists, process tables) are automatically copied to your clipboard so you can paste them anywhere.
+- **System Performance:** CPU usage, RAM usage, battery level, disk space, and uptime.
+- **Process Management:** Find out if specific apps (like Spotify or Safari) are currently running.
+- **Networking:** Find your current IP address and Wi-Fi network name.
+- **File Search:** Locate the largest files on your Mac, find recently modified files, or search by filename.
+- **Productivity:** "What's in my clipboard?", "Set a timer for 10 minutes."
+- **General Knowledge:** Direct mathematical conversions or trivia answered securely offline.
 
 ---
 
@@ -228,21 +183,16 @@ Commands are sandboxed — destructive operations (`rm`, `kill`, `sudo`, `curl`,
 
 ```
 ~/Raju/                      ← this repo
-├── main.swift               ← entire app (~1100 lines)
-├── Models.swift             ← LLM + voice config (edit here to add models)
+├── main.swift               ← the AppDelegate 
+├── Config.swift             ← global paths & config
+├── ServerManager.swift      ← manages llama & whisper processes
+├── LLMClient.swift          ← HTTP client & ReAct loop
+├── ShellExecutor.swift      ← safe bash command runner
+├── AudioRecorder.swift      ← mic input subprocess
+├── TTSManager.swift         ← Piper speech synthesis
+├── Models.swift             ← AI model configurations
 ├── install.sh               ← one-shot dependency installer
-├── assets/
-│   └── screenshot.png
-└── raju.log                 ← runtime log (gitignored)
-
-~/local_llms/
-├── llama.cpp/               ← LLM inference engine + server binary
-│   └── models/              ← *.gguf model files
-└── whisper.cpp/             ← Whisper STT engine + server binary
-    └── models/              ← ggml-small.bin
-
-~/.raju/
-└── voices/                  ← Piper .onnx voice files
+├── raju.log                 ← runtime log (gitignored)
 ```
 
 ---
