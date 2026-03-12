@@ -98,8 +98,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: badge-*
-          path: ci-results/
-          merge-multiple: true
+          path: /tmp/badge-artifacts/
+          merge-multiple: false   # keep subdirs so we can see what downloaded
+
+      - name: Flatten badge artifacts into ci-results/
+        run: |
+          mkdir -p ci-results
+          # Each artifact is in /tmp/badge-artifacts/<artifact-name>/*.json
+          find /tmp/badge-artifacts -name "*.json" -exec cp {} ci-results/ \;
+          echo "Files in ci-results after flatten:"
+          ls -la ci-results/
 
       - name: Commit all badge results in one push
         run: |
