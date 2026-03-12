@@ -38,8 +38,9 @@ jobs:
         run: |
           # Start the llama.cpp server using the official ghcr image
           docker run -d --name llama-server --network host \
+            --entrypoint /app/llama-server \
             -v ${{ github.workspace }}/models:/models \
-            ghcr.io/ggerganov/llama.cpp:server-intel \
+            ghcr.io/ggerganov/llama.cpp:light \
             -m /models/qwen2-1_5b-instruct-q4_k_m.gguf \
             -c 2048 --host 127.0.0.1 --port 8080
           
