@@ -215,7 +215,7 @@ APP="$HOME/Applications/Raju.app"
 APP_BIN="$APP/Contents/MacOS/Raju"
 
 info "Compiling Raju…"
-swiftc "$SCRIPT_DIR/main.swift" "$SCRIPT_DIR/Models.swift" -o "$SCRIPT_DIR/Raju" -framework Cocoa
+swiftc "$SCRIPT_DIR/Config.swift" "$SCRIPT_DIR/Utils.swift" "$SCRIPT_DIR/Models.swift" "$SCRIPT_DIR/AudioRecorder.swift" "$SCRIPT_DIR/WhisperClient.swift" "$SCRIPT_DIR/LLMClient.swift" "$SCRIPT_DIR/ShellExecutor.swift" "$SCRIPT_DIR/TTSManager.swift" "$SCRIPT_DIR/ServerManager.swift" "$SCRIPT_DIR/main.swift" -o "$SCRIPT_DIR/Raju" -framework Cocoa
 ok "Raju compiled"
 
 info "Creating Raju.app bundle in ~/Applications…"
