@@ -78,6 +78,7 @@ func askLLMWithTools(query: String) -> String {
     // Turn 1
     let sys1 = """
     You are Raju, a macOS voice assistant. Machine: \(staticContext). Time: \(now).
+    The user's home directory is \(HOME). Always use standard macOS paths (e.g. ~/Downloads, ~/Desktop, ~/Documents). Do NOT invent or hallucinate volumes like /Volumes/downloads/.
     You can run macOS terminal commands to answer technical questions.
 
     IF YOU NEED TO RUN A COMMAND, output exactly like this and nothing else:
@@ -92,7 +93,10 @@ func askLLMWithTools(query: String) -> String {
       "disk space?" -> <bash>df -h /</bash>
       "system uptime?" -> <bash>uptime</bash>
       "ping google" -> <bash>ping -c 3 google.com</bash>
+      "biggest files in downloads?" -> <bash>ls -lhS ~/Downloads | head -10</bash>
       "find file called budget" -> <bash>find ~/Documents -iname "*budget*" 2>/dev/null | head -15</bash>
+      "is safari running?" -> <bash>pgrep -il "safari"</bash>
+      "wifi network name?" -> <bash>networksetup -getairportnetwork en0</bash>
       "remind me in 5 minutes" -> REMIND: 5 minutes reminder
       "capital of France?" -> Paris is the capital.
     """
