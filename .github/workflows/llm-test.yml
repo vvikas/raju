@@ -18,39 +18,48 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
-      - name: Setup Model Directory
-        run: mkdir -p models
-          
+
+      - name: Install build dependencies
+        run: sudo apt-get install -y cmake build-essential
+
+      - name: Cache llama.cpp build
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: ~/llama.cpp/build
+          key: llama-cpp-build-${{ runner.os }}-v1
+
+      - name: Build llama-server from source
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/ggerganov/llama.cpp ~/llama.cpp
+          cmake -B ~/llama.cpp/build -S ~/llama.cpp -DGGML_METAL=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build ~/llama.cpp/build --config Release --target llama-server -j4
+
       - name: Cache LLM Model
         id: cache-model
         uses: actions/cache@v4
         with:
-          path: models/qwen2-1_5b-instruct-q4_k_m.gguf
+          path: ~/models/qwen2-1_5b-instruct-q4_k_m.gguf
           key: llama-model-qwen2-1.5b-q4_k_m
-          
+
       - name: Download Qwen2 1.5B Model
         if: steps.cache-model.outputs.cache-hit != 'true'
         run: |
-          wget -q --show-progress https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf -O models/qwen2-1_5b-instruct-q4_k_m.gguf
+          mkdir -p ~/models
+          wget -q --show-progress \
+            https://huggingface.co/Qwen/Qwen2-1.5B-Instruct-GGUF/resolve/main/qwen2-1_5b-instruct-q4_k_m.gguf \
+            -O ~/models/qwen2-1_5b-instruct-q4_k_m.gguf
 
-      - name: Start LLaMA Server
+      - name: Start llama-server
         run: |
-          # Start the llama.cpp server using the official ghcr image
-          docker run -d --name llama-server --network host \
-            --entrypoint /app/llama-server \
-            -v ${{ github.workspace }}/models:/models \
-            ghcr.io/ggerganov/llama.cpp:light \
-            -m /models/qwen2-1_5b-instruct-q4_k_m.gguf \
-            -c 2048 --host 127.0.0.1 --port 8080
-          
-          echo "Waiting for llama-server to boot the model..."
-          # the container health check URL is /health for llama-server
-          # wait until the health endpoint returns HTTP 200
-          timeout 120 bash -c 'until [[ "$(curl -s -o /dev/null -w ''%{http_code}'' http://127.0.0.1:8080/health)" == "200" ]]; do sleep 2; done'
-          echo "LLaMA server is ready."
-          docker logs llama-server
-          
-      - name: Run Python Test Suite
-        run: |
-          python3 test_llm.py
+          ~/llama.cpp/build/bin/llama-server \
+            -m ~/models/qwen2-1_5b-instruct-q4_k_m.gguf \
+            -c 2048 --host 127.0.0.1 --port 8080 &
+
+          echo "Waiting for llama-server to be ready..."
+          timeout 180 bash -c 'until curl -sf http://127.0.0.1:8080/health; do sleep 3; done'
+          echo "llama-server is ready!"
+
+      - name: Run LLM Test Suite
+        run: python3 test_llm.py
