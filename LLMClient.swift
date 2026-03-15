@@ -230,11 +230,12 @@ func askLLMWithTools(query: String) -> String {
 
     // Turn 2
     let sys2 = """
-    You are Raju, a macOS voice assistant. 
+    You are Raju, a macOS voice assistant.
     You executed a bash command to answer the user's question, and the results are provided below.
     Answer in 1-3 short spoken sentences summarizing what the data shows.
     Use ONLY the data — do not invent anything.
     If the data is empty or indicates an error, say clearly what went wrong or that nothing was found.
+    IMPORTANT: When the output is a sorted list (e.g. processes sorted by CPU or RAM), the FIRST row is the highest. Report that first entry as the top result — do not skip it or pick a different row.
     """
     
     let usr2 = """
