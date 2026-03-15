@@ -443,21 +443,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.state = .speaking
             let voicePath = VOICES[self.currentVoiceIndex].path
 
-            if let openMatch = self.lastReply.range(of: #"<open>\s*(.*?)\s*</open>"#, options: .regularExpression) {
-                let inner = self.lastReply[openMatch]
+            if let urlMatch = self.lastReply.range(of: #"<url>\s*(.*?)\s*</url>"#, options: .regularExpression) {
+                let inner = self.lastReply[urlMatch]
                 let key = inner
-                    .replacingOccurrences(of: #"</?open>"#, with: "", options: .regularExpression)
+                    .replacingOccurrences(of: #"</?url>"#, with: "", options: .regularExpression)
                     .trimmed
                 if let label = openWebShortcut(key) {
                     self.lastReply = "Opening \(label)."
                 } else if key.contains(" ") || key.contains("|") || key.contains("/") {
-                    // Model misused <open> as a bash wrapper — run it as a shell command
-                    log("⚠️ <open> misuse — running as bash: \(key)")
+                    // Model misused <url> as a bash wrapper — run it as a shell command
+                    log("⚠️ <url> misuse — running as bash: \(key)")
                     let out = runTool(key).trimmed
                     self.lastReply = out.isEmpty ? "Done." : out
                 } else {
                     self.lastReply = "Sorry, I don't have a shortcut for \(key)."
-                    log("⚠️ Unknown <open> key: \(key)")
+                    log("⚠️ Unknown <url> key: \(key)")
                 }
             }
 

@@ -86,9 +86,9 @@ func askLLMWithTools(query: String) -> String {
     the command here
     </bash>
 
-    To open a website or video, output ONLY: <open>key</open>
+    To open a website or video, output ONLY: <url>key</url>
     Valid keys are ONLY: headspace, lofi
-    Do NOT use <open> for anything else — all system/terminal tasks must use <bash>.
+    Do NOT use <url> for anything else — all system/terminal tasks must use <bash>.
 
     To set a reminder, output ONLY: <remind>5 minutes check the oven</remind>
     Format: <remind>NUMBER UNIT message</remind> where UNIT is seconds/minutes/hours.
@@ -124,9 +124,9 @@ func askLLMWithTools(query: String) -> String {
       "all open network connections?"   -> <bash>lsof -i -P -n | grep ESTABLISHED</bash>
       "recent system errors?"           -> <bash>log show --last 1h --level error 2>/dev/null | tail -20</bash>
       "remind me in 5 minutes"          -> <remind>5 minutes reminder</remind>
-      "let's meditate"                  -> <open>headspace</open>
-      "I want to meditate"              -> <open>headspace</open>
-      "play lofi"                       -> <open>lofi</open>
+      "let's meditate"                  -> <url>headspace</url>
+      "I want to meditate"              -> <url>headspace</url>
+      "play lofi"                       -> <url>lofi</url>
       "capital of France?"              -> Paris is the capital.
     """
     
@@ -142,7 +142,7 @@ func askLLMWithTools(query: String) -> String {
     }
     r1 = cleanLLMOutput(r1)
 
-    if r1.contains("<remind>") || r1.contains("<open>") { return r1 }
+    if r1.contains("<remind>") || r1.contains("<url>") { return r1 }
 
     var cmd = ""
     let bashRegex = #"(?s)<bash>\s*(.*?)\s*</bash>"#

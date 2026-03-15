@@ -27,9 +27,9 @@ IF YOU NEED TO RUN A COMMAND, output exactly like this and nothing else:
 the command here
 </bash>
 
-To open a website or video, output ONLY: <open>key</open>
+To open a website or video, output ONLY: <url>key</url>
 Valid keys are ONLY: headspace, lofi
-Do NOT use <open> for anything else — all system/terminal tasks must use <bash>.
+Do NOT use <url> for anything else — all system/terminal tasks must use <bash>.
 
 To set a reminder, output ONLY: <remind>5 minutes check the oven</remind>
 Format: <remind>NUMBER UNIT message</remind> where UNIT is seconds/minutes/hours.
@@ -65,9 +65,9 @@ Examples:
   "all open network connections?"   -> <bash>lsof -i -P -n | grep ESTABLISHED</bash>
   "recent system errors?"           -> <bash>log show --last 1h --level error 2>/dev/null | tail -20</bash>
   "remind me in 5 minutes"          -> <remind>5 minutes reminder</remind>
-  "let's meditate"                  -> <open>headspace</open>
-  "I want to meditate"              -> <open>headspace</open>
-  "play lofi"                       -> <open>lofi</open>
+  "let's meditate"                  -> <url>headspace</url>
+  "I want to meditate"              -> <url>headspace</url>
+  "play lofi"                       -> <url>lofi</url>
   "capital of France?"              -> Paris is the capital."""
 
 
@@ -121,8 +121,8 @@ def extract_bash(response):
     return match.group(1).strip() if match else None
 
 def extract_open(response):
-    """Returns the key inside <open>key</open>, or None."""
-    match = re.search(r"<open>\s*(\S+?)\s*</open>", response.strip(), re.IGNORECASE)
+    """Returns the key inside <url>key</url>, or None."""
+    match = re.search(r"<url>\s*(\S+?)\s*</url>", response.strip(), re.IGNORECASE)
     return match.group(1).lower() if match else None
 
 def extract_remind(response):
@@ -353,7 +353,7 @@ def run_tests(model_name="Unknown model"):
         if test_type == "open":
             key = extract_open(raw_response)
             if key is None:
-                print(f"⚠️  Warn - No <open> tag. Raw: {raw_response[:120]}")
+                print(f"⚠️  Warn - No <url> tag. Raw: {raw_response[:120]}")
                 is_valid = False
             else:
                 print(f"🌐 <open> key: {key}")
