@@ -92,20 +92,39 @@ func askLLMWithTools(query: String) -> String {
 
     If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
     Examples:
-      "what's using CPU?" -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
-      "what's using RAM?" -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
-      "disk space?" -> <bash>df -h /</bash>
-      "system uptime?" -> <bash>uptime</bash>
-      "ping google" -> <bash>ping -c 3 google.com</bash>
-      "biggest files in downloads?" -> <bash>ls -lhS ~/Downloads | head -10</bash>
-      "find file called budget" -> <bash>find ~/Documents -iname "*budget*" 2>/dev/null | head -15</bash>
-      "is safari running?" -> <bash>pgrep -il "safari"</bash>
-      "wifi network name?" -> <bash>networksetup -getairportnetwork en0</bash>
-      "remind me in 5 minutes" -> REMIND: 5 minutes reminder
-      "let's meditate" -> OPEN: headspace
-      "I want to meditate" -> OPEN: headspace
-      "play lofi" -> OPEN: lofi
-      "capital of France?" -> Paris is the capital.
+      "what's using CPU?"               -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
+      "what's using RAM?"               -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
+      "disk space?"                     -> <bash>df -h /</bash>
+      "system uptime?"                  -> <bash>uptime</bash>
+      "battery level?"                  -> <bash>pmset -g batt</bash>
+      "wifi network name?"              -> <bash>networksetup -getairportnetwork en0</bash>
+      "my IP address?"                  -> <bash>ipconfig getifaddr en0</bash>
+      "public IP?"                      -> <bash>curl -s ifconfig.me</bash>
+      "what's on port 3000?"            -> <bash>lsof -i :3000</bash>
+      "what ports are listening?"       -> <bash>lsof -i -P | grep LISTEN</bash>
+      "biggest files in downloads?"     -> <bash>ls -lhS ~/Downloads | head -10</bash>
+      "find file called budget.xlsx"    -> <bash>find ~/ -iname "*budget.xlsx*" 2>/dev/null | head -15</bash>
+      "find all .env files"             -> <bash>find ~/ -name ".env" 2>/dev/null | head -15</bash>
+      "find python files modified today" -> <bash>find ~/ -name "*.py" -mtime -1 2>/dev/null | head -15</bash>
+      "is safari running?"              -> <bash>pgrep -il "safari"</bash>
+      "running docker containers?"      -> <bash>docker ps</bash>
+      "python version?"                 -> <bash>python3 --version</bash>
+      "node version?"                   -> <bash>node --version</bash>
+      "my git branch?"                  -> <bash>git rev-parse --abbrev-ref HEAD</bash>
+      "recent git commits?"             -> <bash>git log --oneline -10</bash>
+      "how many CPU cores?"             -> <bash>sysctl -n hw.logicalcpu</bash>
+      "macOS version?"                  -> <bash>sw_vers -productVersion</bash>
+      "show environment variables?"     -> <bash>env</bash>
+      "installed homebrew packages?"    -> <bash>brew list</bash>
+      "my hostname?"                    -> <bash>hostname</bash>
+      "cron jobs?"                      -> <bash>crontab -l</bash>
+      "all open network connections?"   -> <bash>lsof -i -P -n | grep ESTABLISHED</bash>
+      "recent system errors?"           -> <bash>log show --last 1h --level error 2>/dev/null | tail -20</bash>
+      "remind me in 5 minutes"          -> REMIND: 5 minutes reminder
+      "let's meditate"                  -> OPEN: headspace
+      "I want to meditate"              -> OPEN: headspace
+      "play lofi"                       -> OPEN: lofi
+      "capital of France?"              -> Paris is the capital.
     """
     
     let msgs1: [[String: String]] = [
