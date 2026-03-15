@@ -3,10 +3,13 @@ import urllib.request
 import re
 import os
 import argparse
+import subprocess
 import sys
+import time
 
 # We will test the local LLM running on port 8080
 LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+LLAMA_HEALTH = "http://127.0.0.1:8080/health"
 
 MACHINE_CONTEXT = "macOS 14.0 on MacBookPro — Apple M2, 16GB RAM"
 USER_HOME = os.path.expanduser("~")
@@ -14,8 +17,8 @@ USER_HOME = os.path.expanduser("~")
 import datetime
 NOW = datetime.datetime.now().strftime("%A, %b %-d %Y, %H:%M")
 
-SYS_PROMPT = f"""
-You are Raju, a macOS voice assistant. Machine: {MACHINE_CONTEXT}. Time: {NOW}.
+# ── System prompt — must match LLMClient.swift exactly ────────────────────────
+SYS_PROMPT = f"""You are Raju, a macOS voice assistant. Machine: {MACHINE_CONTEXT}. Time: {NOW}.
 The user's home directory is {USER_HOME}. Always use standard macOS paths (e.g. ~/Downloads, ~/Desktop, ~/Documents). Do NOT invent or hallucinate volumes like /Volumes/downloads/.
 You can run macOS terminal commands to answer technical questions.
 
@@ -24,12 +27,14 @@ IF YOU NEED TO RUN A COMMAND, output exactly like this and nothing else:
 the command here
 </bash>
 
-To open a website or video, output ONLY: OPEN: <key>
+To open a website or video, output ONLY: <open>key</open>
 Valid keys are ONLY: headspace, lofi
-Do NOT use OPEN: for anything else — all system/terminal tasks must use <bash>.
+Do NOT use <open> for anything else — all system/terminal tasks must use <bash>.
+
+To set a reminder, output ONLY: <remind>5 minutes check the oven</remind>
+Format: <remind>NUMBER UNIT message</remind> where UNIT is seconds/minutes/hours.
 
 If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
-
 Examples:
   "what's using CPU?"               -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
   "what's using RAM?"               -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
@@ -39,7 +44,7 @@ Examples:
   "wifi network name?"              -> <bash>networksetup -getairportnetwork en0</bash>
   "my IP address?"                  -> <bash>ipconfig getifaddr en0</bash>
   "public IP?"                      -> <bash>curl -s ifconfig.me</bash>
-  "what's on port 3000?"           -> <bash>lsof -i :3000</bash>
+  "what's on port 3000?"            -> <bash>lsof -i :3000</bash>
   "what ports are listening?"       -> <bash>lsof -i -P | grep LISTEN</bash>
   "biggest files in downloads?"     -> <bash>ls -lhS ~/Downloads | head -10</bash>
   "find file called budget.xlsx"    -> <bash>find ~/ -iname "*budget.xlsx*" 2>/dev/null | head -15</bash>
@@ -59,28 +64,74 @@ Examples:
   "cron jobs?"                      -> <bash>crontab -l</bash>
   "all open network connections?"   -> <bash>lsof -i -P -n | grep ESTABLISHED</bash>
   "recent system errors?"           -> <bash>log show --last 1h --level error 2>/dev/null | tail -20</bash>
-  "remind me in 5 minutes"          -> REMIND: 5 minutes reminder
-  "let's meditate"                  -> OPEN: headspace
-  "I want to meditate"              -> OPEN: headspace
-  "play lofi"                       -> OPEN: lofi
-  "capital of France?"              -> Paris is the capital.
-"""
+  "remind me in 5 minutes"          -> <remind>5 minutes reminder</remind>
+  "let's meditate"                  -> <open>headspace</open>
+  "I want to meditate"              -> <open>headspace</open>
+  "play lofi"                       -> <open>lofi</open>
+  "capital of France?"              -> Paris is the capital."""
 
+
+# ── Server restart ─────────────────────────────────────────────────────────────
+def restart_server(model_path: str):
+    """Kill any running llama-server and start a fresh one with the same
+    flags the app uses (matching ServerManager.swift)."""
+    print(f"\n🔄 Restarting llama-server with: {os.path.basename(model_path)}")
+
+    # Kill existing instances
+    subprocess.run(["pkill", "-f", "llama-server"], capture_output=True)
+    time.sleep(2)
+
+    # Detect GPU (Apple Silicon → ngl 999, Intel → 0)
+    arch = subprocess.run(["uname", "-m"], capture_output=True, text=True).stdout.strip()
+    ngl = "999" if arch == "arm64" else "0"
+
+    llama_bin = os.path.expanduser("~/local_llms/llama.cpp/build/bin/llama-server")
+    cmd = [
+        llama_bin,
+        "-m", model_path,
+        "-ngl", ngl,
+        "--port", "8080",
+        "--host", "127.0.0.1",
+        "-c", "4096",
+        "-n", "400",
+        "--log-disable",
+    ]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Wait up to 180s for health
+    print("   Waiting for llama-server to be ready", end="", flush=True)
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(LLAMA_HEALTH, timeout=2) as r:
+                if r.status == 200:
+                    print(" ✅ ready!")
+                    return True
+        except Exception:
+            pass
+        print(".", end="", flush=True)
+        time.sleep(3)
+    print(" ❌ timed out")
+    return False
+
+
+# ── Tag extractors ─────────────────────────────────────────────────────────────
 def extract_bash(response):
     match = re.search(r"<bash>\s*(.*?)\s*</bash>", response, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return None
+    return match.group(1).strip() if match else None
 
 def extract_open(response):
-    """Returns the key after 'OPEN:' if present, else None."""
-    match = re.match(r"OPEN:\s*(\S+)", response.strip(), re.IGNORECASE)
+    """Returns the key inside <open>key</open>, or None."""
+    match = re.search(r"<open>\s*(\S+?)\s*</open>", response.strip(), re.IGNORECASE)
     return match.group(1).lower() if match else None
 
 def extract_remind(response):
-    """Returns True if response starts with REMIND:"""
-    return response.strip().upper().startswith("REMIND:")
+    """Returns the content inside <remind>...</remind>, or None."""
+    match = re.search(r"<remind>\s*(.*?)\s*</remind>", response.strip(), re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else None
 
+
+# ── LLM call ──────────────────────────────────────────────────────────────────
 def query_llm(query):
     data = {
         "messages": [
@@ -88,19 +139,22 @@ def query_llm(query):
             {"role": "user", "content": query}
         ],
         "temperature": 0.1,
-        "max_tokens": 150
+        "max_tokens": 80
     }
-    req = urllib.request.Request(LLAMA_URL, data=json.dumps(data).encode('utf-8'), headers={'Content-Type': 'application/json'})
+    req = urllib.request.Request(
+        LLAMA_URL,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=120) as response:
-            res = json.loads(response.read().decode('utf-8'))
-            return res['choices'][0]['message']['content'].strip()
+            res = json.loads(response.read().decode("utf-8"))
+            return res["choices"][0]["message"]["content"].strip()
     except Exception as e:
         return f"ERROR: {e}"
 
-# ── The Test Suite ─────────────────────────────────────────────────────────────
-# 30 questions a software engineer would ask Raju.
-# Validators check bash command logic — NOT exact string matches.
+
+# ── Test suite ─────────────────────────────────────────────────────────────────
 TEST_CASES = [
 
     # ── System Performance (5) ────────────────────────────────────────────────
@@ -237,7 +291,7 @@ TEST_CASES = [
         "validator": lambda cmd: cmd and "crontab" in cmd
     },
 
-    # ── Web Shortcuts — OPEN: (4) ─────────────────────────────────────────────
+    # ── Web Shortcuts — <open> (4) ────────────────────────────────────────────
     {
         "query": "let's meditate",
         "type": "open",
@@ -259,26 +313,27 @@ TEST_CASES = [
         "validator": lambda key: key == "lofi"
     },
 
-    # ── Reminders — REMIND: (2) ───────────────────────────────────────────────
+    # ── Reminders — <remind> (2) ──────────────────────────────────────────────
     {
         "query": "remind me in 5 minutes to take a break",
         "type": "remind",
-        "validator": lambda r: r  # any REMIND: response is valid
+        "validator": lambda r: r is not None
     },
     {
         "query": "set a reminder for 10 minutes",
         "type": "remind",
-        "validator": lambda r: r
+        "validator": lambda r: r is not None
     },
 
 ]
 
+
 def run_tests(model_name="Unknown model"):
-    print("="*50)
+    print("=" * 50)
     print(f"  🧪 Raju LLM Test Suite")
     print(f"  Model : {model_name}")
     print(f"  Tests : {len(TEST_CASES)}")
-    print("="*50)
+    print("=" * 50)
 
     passed = 0
     total = len(TEST_CASES)
@@ -298,20 +353,20 @@ def run_tests(model_name="Unknown model"):
         if test_type == "open":
             key = extract_open(raw_response)
             if key is None:
-                print(f"⚠️  Warn - No OPEN: prefix. Raw: {raw_response[:120]}")
+                print(f"⚠️  Warn - No <open> tag. Raw: {raw_response[:120]}")
                 is_valid = False
             else:
-                print(f"🌐 OPEN key: {key}")
+                print(f"🌐 <open> key: {key}")
                 is_valid = validator(key)
 
         elif test_type == "remind":
-            is_remind = extract_remind(raw_response)
-            if not is_remind:
-                print(f"⚠️  Warn - No REMIND: prefix. Raw: {raw_response[:120]}")
+            content = extract_remind(raw_response)
+            if content is None:
+                print(f"⚠️  Warn - No <remind> tag. Raw: {raw_response[:120]}")
                 is_valid = False
             else:
-                print(f"⏰ REMIND: {raw_response[:80]}")
-                is_valid = validator(raw_response)
+                print(f"⏰ <remind>: {content[:80]}")
+                is_valid = validator(content)
 
         else:  # bash
             cmd = extract_bash(raw_response)
@@ -328,11 +383,11 @@ def run_tests(model_name="Unknown model"):
         else:
             print("❌ FAIL - Response did not meet validator constraints.")
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     pct = int(round((passed / total) * 100))
     result_icon = "✅" if pct >= 70 else "❌"
     print(f"{result_icon} RESULT [{model_name}]: {passed}/{total} ({pct}%) passed")
-    print("="*50)
+    print("=" * 50)
 
     # Write shields.io endpoint JSON for live README badge
     safe_name = model_name.lower().replace(" ", "-").replace(".", "_")
@@ -352,8 +407,20 @@ def run_tests(model_name="Unknown model"):
     if pct < 70:
         sys.exit(1)
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Raju LLM test suite")
     parser.add_argument("--model", default="Unknown", help="Model name label for output")
+    parser.add_argument("--model-path", default="", help="Path to GGUF model file (required with --restart)")
+    parser.add_argument("--restart", action="store_true", help="Kill and restart llama-server before testing")
     args = parser.parse_args()
+
+    if args.restart:
+        model_path = args.model_path or os.path.expanduser(
+            "~/local_llms/llama.cpp/models/qwen2-1.5b.gguf"
+        )
+        if not restart_server(model_path):
+            print("❌ Could not start llama-server. Aborting.")
+            sys.exit(1)
+
     run_tests(model_name=args.model)
