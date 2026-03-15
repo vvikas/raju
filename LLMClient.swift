@@ -86,9 +86,12 @@ func askLLMWithTools(query: String) -> String {
     the command here
     </bash>
 
-    To open a website or video, output ONLY: OPEN: <key>
+    To open a website or video, output ONLY: <open>key</open>
     Valid keys are ONLY: headspace, lofi
-    Do NOT use OPEN: for anything else — all system/terminal tasks must use <bash>.
+    Do NOT use <open> for anything else — all system/terminal tasks must use <bash>.
+
+    To set a reminder, output ONLY: <remind>5 minutes check the oven</remind>
+    Format: <remind>NUMBER UNIT message</remind> where UNIT is seconds/minutes/hours.
 
     If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
     Examples:
@@ -120,10 +123,10 @@ func askLLMWithTools(query: String) -> String {
       "cron jobs?"                      -> <bash>crontab -l</bash>
       "all open network connections?"   -> <bash>lsof -i -P -n | grep ESTABLISHED</bash>
       "recent system errors?"           -> <bash>log show --last 1h --level error 2>/dev/null | tail -20</bash>
-      "remind me in 5 minutes"          -> REMIND: 5 minutes reminder
-      "let's meditate"                  -> OPEN: headspace
-      "I want to meditate"              -> OPEN: headspace
-      "play lofi"                       -> OPEN: lofi
+      "remind me in 5 minutes"          -> <remind>5 minutes reminder</remind>
+      "let's meditate"                  -> <open>headspace</open>
+      "I want to meditate"              -> <open>headspace</open>
+      "play lofi"                       -> <open>lofi</open>
       "capital of France?"              -> Paris is the capital.
     """
     
@@ -139,7 +142,7 @@ func askLLMWithTools(query: String) -> String {
     }
     r1 = cleanLLMOutput(r1)
 
-    if r1.hasPrefix("REMIND:") { return r1 }
+    if r1.contains("<remind>") || r1.contains("<open>") { return r1 }
 
     var cmd = ""
     let bashRegex = #"(?s)<bash>\s*(.*?)\s*</bash>"#

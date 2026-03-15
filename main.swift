@@ -443,23 +443,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.state = .speaking
             let voicePath = VOICES[self.currentVoiceIndex].path
 
-            if self.lastReply.hasPrefix("OPEN:") {
-                let key = String(self.lastReply.dropFirst("OPEN:".count)).trimmed
+            if let openMatch = self.lastReply.range(of: #"<open>\s*(.*?)\s*</open>"#, options: .regularExpression) {
+                let inner = self.lastReply[openMatch]
+                let key = inner
+                    .replacingOccurrences(of: #"</?open>"#, with: "", options: .regularExpression)
+                    .trimmed
                 if let label = openWebShortcut(key) {
                     self.lastReply = "Opening \(label)."
-                } else if key.contains(" ") || key.contains("|") || key.contains("/") {
-                    // LLM misused OPEN: as a bash prefix — run it as a shell command
-                    log("⚠️ OPEN: misuse — running as bash: \(key)")
-                    let out = runTool(key).trimmed
-                    self.lastReply = out.isEmpty ? "Done." : out
                 } else {
                     self.lastReply = "Sorry, I don't have a shortcut for \(key)."
-                    log("⚠️ Unknown OPEN key: \(key)")
+                    log("⚠️ Unknown <open> key: \(key)")
                 }
             }
 
-            if self.lastReply.hasPrefix("REMIND:") {
-                let raw    = String(self.lastReply.dropFirst("REMIND:".count)).trimmed
+            if let remindMatch = self.lastReply.range(of: #"<remind>\s*(.*?)\s*</remind>"#, options: .regularExpression) {
+                let inner = self.lastReply[remindMatch]
+                let raw = inner
+                    .replacingOccurrences(of: #"</?remind>"#, with: "", options: .regularExpression)
+                    .trimmed
                 let tokens = raw.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
                 var secs   = 60.0
                 var msgIdx = 0
