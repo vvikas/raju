@@ -163,30 +163,40 @@ func askLLMWithTools(query: String) -> String {
 
     guard !cmd.isEmpty else { return r1 }
 
-    log("🔧 Tool call: \(cmd)")
-    var toolOut = runTool(cmd)
+    // Strip grep filters appended to top/ps — they almost always produce empty output
+    // because top output doesn't contain literal words like "RAM" or "CPU"
+    var execCmd = cmd
+    if (execCmd.lowercased().hasPrefix("top") || execCmd.lowercased().hasPrefix("ps")) &&
+       execCmd.contains("| grep") {
+        execCmd = execCmd.components(separatedBy: "| grep").first?.trimmed ?? execCmd
+        log("⚠️ Stripped grep filter from process command: \(execCmd)")
+    }
+
+    log("🔧 Tool call: \(execCmd)")
+    var toolOut = runTool(execCmd)
     log("🔧 Tool output (\(toolOut.count)c): \(toolOut.prefix(200))")
 
     let usefulLines = toolOut.components(separatedBy: "\n").filter { !$0.trimmed.isEmpty }
     if usefulLines.count < 2 || toolOut.trimmed.count < 20 {
         let fallback: String
-        if cmd.lowercased().contains("top ") || cmd.lowercased().hasPrefix("top") {
-            let sortFlag = cmd.contains("cpu") ? "cpu" : "mem"
+        if execCmd.lowercased().contains("top ") || execCmd.lowercased().hasPrefix("top") {
+            // Check for explicit -o mem/-o cpu flag; default to mem for RAM questions
+            let sortFlag = execCmd.range(of: #"-o\s+cpu"#, options: .regularExpression) != nil ? "cpu" : "mem"
             fallback = "top -l 1 -o \(sortFlag) -n 15 -stats pid,command,cpu,mem | tail -n +13"
-        } else if cmd.lowercased().contains("ps ") {
-            let sortPipe = cmd.contains("nrk4") || cmd.contains("-m") ? "| sort -nrk4" : "| sort -nrk3"
+        } else if execCmd.lowercased().contains("ps ") {
+            let sortPipe = execCmd.contains("nrk4") || execCmd.contains("-m") ? "| sort -nrk4" : "| sort -nrk3"
             fallback = "ps -cAxo pid,comm,%cpu,rss \(sortPipe) | head -15"
-        } else if cmd.hasPrefix("find ") || cmd.contains(" find ") {
-            if let kw = extractFindKeyword(cmd) {
-                let folder = extractFindFolder(cmd)
+        } else if execCmd.hasPrefix("find ") || execCmd.contains(" find ") {
+            if let kw = extractFindKeyword(execCmd) {
+                let folder = extractFindFolder(execCmd)
                 fallback = "find \(folder) -iname \"*\(kw)*\" 2>/dev/null"
             } else {
-                fallback = cmd
+                fallback = execCmd
             }
         } else {
-            fallback = cmd.components(separatedBy: "|").first?.trimmed ?? cmd
+            fallback = execCmd.components(separatedBy: "|").first?.trimmed ?? execCmd
         }
-        if fallback != cmd {
+        if fallback != execCmd {
             log("⚠️ Sparse output (\(toolOut.count)c) — retrying: \(fallback)")
             toolOut = runTool(fallback)
             log("🔧 Retry output (\(toolOut.count)c): \(toolOut.prefix(200))")
@@ -229,7 +239,7 @@ func askLLMWithTools(query: String) -> String {
     let usr2 = """
     Question: \(query)
     
-    Command executed: `\(cmd)`
+    Command executed: `\(execCmd)`
     
     Output:
     \(clipboardNote)\(dataForLLM)
