@@ -11,8 +11,11 @@ LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 MACHINE_CONTEXT = "macOS 14.0 on MacBookPro — Apple M2, 16GB RAM"
 USER_HOME = os.path.expanduser("~")
 
+import datetime
+NOW = datetime.datetime.now().strftime("%A, %b %-d %Y, %H:%M")
+
 SYS_PROMPT = f"""
-You are Raju, a macOS voice assistant. Machine: {MACHINE_CONTEXT}.
+You are Raju, a macOS voice assistant. Machine: {MACHINE_CONTEXT}. Time: {NOW}.
 The user's home directory is {USER_HOME}. Always use standard macOS paths (e.g. ~/Downloads, ~/Desktop, ~/Documents). Do NOT invent or hallucinate volumes like /Volumes/downloads/.
 You can run macOS terminal commands to answer technical questions.
 
