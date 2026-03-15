@@ -86,8 +86,9 @@ func askLLMWithTools(query: String) -> String {
     the command here
     </bash>
 
-    To open a website or video, output exactly: OPEN: <key>
-    Available keys: headspace (meditation video), lofi (lo-fi music)
+    To open a website or video, output ONLY: OPEN: <key>
+    Valid keys are ONLY: headspace, lofi
+    Do NOT use OPEN: for anything else — all system/terminal tasks must use <bash>.
 
     If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
     Examples:
