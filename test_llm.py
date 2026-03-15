@@ -21,6 +21,10 @@ IF YOU NEED TO RUN A COMMAND, output exactly like this and nothing else:
 the command here
 </bash>
 
+To open a website or video, output ONLY: OPEN: <key>
+Valid keys are ONLY: headspace, lofi
+Do NOT use OPEN: for anything else — all system/terminal tasks must use <bash>.
+
 If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
 
 Examples:
@@ -52,6 +56,11 @@ Examples:
   "cron jobs?"                      -> <bash>crontab -l</bash>
   "all open network connections?"   -> <bash>lsof -i -P -n | grep ESTABLISHED</bash>
   "recent system errors?"           -> <bash>log show --last 1h --level error 2>/dev/null | tail -20</bash>
+  "remind me in 5 minutes"          -> REMIND: 5 minutes reminder
+  "let's meditate"                  -> OPEN: headspace
+  "I want to meditate"              -> OPEN: headspace
+  "play lofi"                       -> OPEN: lofi
+  "capital of France?"              -> Paris is the capital.
 """
 
 def extract_bash(response):
@@ -59,6 +68,15 @@ def extract_bash(response):
     if match:
         return match.group(1).strip()
     return None
+
+def extract_open(response):
+    """Returns the key after 'OPEN:' if present, else None."""
+    match = re.match(r"OPEN:\s*(\S+)", response.strip(), re.IGNORECASE)
+    return match.group(1).lower() if match else None
+
+def extract_remind(response):
+    """Returns True if response starts with REMIND:"""
+    return response.strip().upper().startswith("REMIND:")
 
 def query_llm(query):
     data = {
@@ -216,6 +234,40 @@ TEST_CASES = [
         "validator": lambda cmd: cmd and "crontab" in cmd
     },
 
+    # ── Web Shortcuts — OPEN: (4) ─────────────────────────────────────────────
+    {
+        "query": "let's meditate",
+        "type": "open",
+        "validator": lambda key: key == "headspace"
+    },
+    {
+        "query": "I want to do some meditation",
+        "type": "open",
+        "validator": lambda key: key == "headspace"
+    },
+    {
+        "query": "play some lofi music",
+        "type": "open",
+        "validator": lambda key: key == "lofi"
+    },
+    {
+        "query": "put on some chill background music",
+        "type": "open",
+        "validator": lambda key: key == "lofi"
+    },
+
+    # ── Reminders — REMIND: (2) ───────────────────────────────────────────────
+    {
+        "query": "remind me in 5 minutes to take a break",
+        "type": "remind",
+        "validator": lambda r: r  # any REMIND: response is valid
+    },
+    {
+        "query": "set a reminder for 10 minutes",
+        "type": "remind",
+        "validator": lambda r: r
+    },
+
 ]
 
 def run_tests(model_name="Unknown model"):
@@ -229,31 +281,49 @@ def run_tests(model_name="Unknown model"):
     total = len(TEST_CASES)
 
     for i, test in enumerate(TEST_CASES, 1):
-        query = test["query"]
+        query     = test["query"]
         validator = test["validator"]
+        test_type = test.get("type", "bash")  # bash | open | remind
 
-        print(f"\n[Test {i}/{total}] Query: '{query}'")
+        print(f"\n[Test {i}/{total}] [{test_type.upper()}] Query: '{query}'")
         raw_response = query_llm(query)
 
         if raw_response.startswith("ERROR"):
             print("❌ FAIL - Server error or timeout:", raw_response)
             continue
 
-        cmd = extract_bash(raw_response)
-        if cmd is None:
-            print(f"⚠️  Warn - No <bash> tags. Raw: {raw_response[:120]}")
-            is_valid = validator(raw_response)
-        else:
-            print(f"🔧 Generated: {cmd}")
-            is_valid = validator(cmd)
+        if test_type == "open":
+            key = extract_open(raw_response)
+            if key is None:
+                print(f"⚠️  Warn - No OPEN: prefix. Raw: {raw_response[:120]}")
+                is_valid = False
+            else:
+                print(f"🌐 OPEN key: {key}")
+                is_valid = validator(key)
+
+        elif test_type == "remind":
+            is_remind = extract_remind(raw_response)
+            if not is_remind:
+                print(f"⚠️  Warn - No REMIND: prefix. Raw: {raw_response[:120]}")
+                is_valid = False
+            else:
+                print(f"⏰ REMIND: {raw_response[:80]}")
+                is_valid = validator(raw_response)
+
+        else:  # bash
+            cmd = extract_bash(raw_response)
+            if cmd is None:
+                print(f"⚠️  Warn - No <bash> tags. Raw: {raw_response[:120]}")
+                is_valid = validator(raw_response)
+            else:
+                print(f"🔧 Generated: {cmd}")
+                is_valid = validator(cmd)
 
         if is_valid:
             print("✅ PASS")
             passed += 1
         else:
-            print("❌ FAIL - Command did not meet validator constraints.")
-            if cmd:
-                print(f"   Cmd: {cmd}")
+            print("❌ FAIL - Response did not meet validator constraints.")
 
     print("\n" + "="*50)
     pct = int(round((passed / total) * 100))
