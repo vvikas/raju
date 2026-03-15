@@ -443,6 +443,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.state = .speaking
             let voicePath = VOICES[self.currentVoiceIndex].path
 
+            if self.lastReply.hasPrefix("OPEN:") {
+                let key = String(self.lastReply.dropFirst("OPEN:".count)).trimmed
+                if let label = openWebShortcut(key) {
+                    self.lastReply = "Opening \(label)."
+                } else {
+                    self.lastReply = "Sorry, I don't have a shortcut for \(key)."
+                    log("⚠️ Unknown OPEN key: \(key)")
+                }
+            }
+
             if self.lastReply.hasPrefix("REMIND:") {
                 let raw    = String(self.lastReply.dropFirst("REMIND:".count)).trimmed
                 let tokens = raw.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
