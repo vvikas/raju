@@ -447,6 +447,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let key = String(self.lastReply.dropFirst("OPEN:".count)).trimmed
                 if let label = openWebShortcut(key) {
                     self.lastReply = "Opening \(label)."
+                } else if key.contains(" ") || key.contains("|") || key.contains("/") {
+                    // LLM misused OPEN: as a bash prefix — run it as a shell command
+                    log("⚠️ OPEN: misuse — running as bash: \(key)")
+                    let out = runTool(key).trimmed
+                    self.lastReply = out.isEmpty ? "Done." : out
                 } else {
                     self.lastReply = "Sorry, I don't have a shortcut for \(key)."
                     log("⚠️ Unknown OPEN key: \(key)")
