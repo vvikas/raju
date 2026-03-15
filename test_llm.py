@@ -36,8 +36,8 @@ Format: <remind>NUMBER UNIT message</remind> where UNIT is seconds/minutes/hours
 
 If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
 Examples:
-  "what's using CPU?"               -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
-  "what's using RAM?"               -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
+  "what's using CPU?"               -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,rsize | tail -n +13</bash>
+  "what's using RAM?"               -> <bash>top -l 1 -o rsize -n 10 -stats pid,command,rsize,cpu | tail -n +13</bash>
   "disk space?"                     -> <bash>df -h /</bash>
   "system uptime?"                  -> <bash>uptime</bash>
   "battery level?"                  -> <bash>pmset -g batt</bash>
@@ -164,7 +164,7 @@ TEST_CASES = [
     },
     {
         "query": "what processes are using the most memory?",
-        "validator": lambda cmd: cmd and ("top" in cmd or "ps" in cmd) and ("mem" in cmd.lower() or "rss" in cmd.lower() or "vsz" in cmd.lower())
+        "validator": lambda cmd: cmd and ("top" in cmd or "ps" in cmd) and ("mem" in cmd.lower() or "rsize" in cmd.lower() or "rss" in cmd.lower() or "vsz" in cmd.lower())
     },
     {
         "query": "how much free RAM do I have?",

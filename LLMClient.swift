@@ -95,8 +95,8 @@ func askLLMWithTools(query: String) -> String {
 
     If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
     Examples:
-      "what's using CPU?"               -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
-      "what's using RAM?"               -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
+      "what's using CPU?"               -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,rsize | tail -n +13</bash>
+      "what's using RAM?"               -> <bash>top -l 1 -o rsize -n 10 -stats pid,command,rsize,cpu | tail -n +13</bash>
       "disk space?"                     -> <bash>df -h /</bash>
       "system uptime?"                  -> <bash>uptime</bash>
       "battery level?"                  -> <bash>pmset -g batt</bash>
@@ -180,9 +180,10 @@ func askLLMWithTools(query: String) -> String {
     if usefulLines.count < 2 || toolOut.trimmed.count < 20 {
         let fallback: String
         if execCmd.lowercased().contains("top ") || execCmd.lowercased().hasPrefix("top") {
-            // Check for explicit -o mem/-o cpu flag; default to mem for RAM questions
-            let sortFlag = execCmd.range(of: #"-o\s+cpu"#, options: .regularExpression) != nil ? "cpu" : "mem"
-            fallback = "top -l 1 -o \(sortFlag) -n 15 -stats pid,command,cpu,mem | tail -n +13"
+            // Use rsize (= Activity Monitor "Real Memory") so large processes like Electron apps show correctly
+            let sortFlag = execCmd.range(of: #"-o\s+cpu"#, options: .regularExpression) != nil ? "cpu" : "rsize"
+            let statsFlags = sortFlag == "cpu" ? "pid,command,cpu,rsize" : "pid,command,rsize,cpu"
+            fallback = "top -l 1 -o \(sortFlag) -n 15 -stats \(statsFlags) | tail -n +13"
         } else if execCmd.lowercased().contains("ps ") {
             let sortPipe = execCmd.contains("nrk4") || execCmd.contains("-m") ? "| sort -nrk4" : "| sort -nrk3"
             fallback = "ps -cAxo pid,comm,%cpu,rss \(sortPipe) | head -15"
