@@ -86,7 +86,10 @@ func askLLMWithTools(query: String) -> String {
     the command here
     </bash>
 
-    If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences. 
+    To open a website or video, output exactly: OPEN: <key>
+    Available keys: headspace (meditation video), lofi (lo-fi music)
+
+    If you can answer without running a command, DO NOT output <bash>. Just answer directly in 1-2 sentences.
     Examples:
       "what's using CPU?" -> <bash>top -l 1 -o cpu -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
       "what's using RAM?" -> <bash>top -l 1 -o mem -n 10 -stats pid,command,cpu,mem | tail -n +13</bash>
@@ -98,6 +101,9 @@ func askLLMWithTools(query: String) -> String {
       "is safari running?" -> <bash>pgrep -il "safari"</bash>
       "wifi network name?" -> <bash>networksetup -getairportnetwork en0</bash>
       "remind me in 5 minutes" -> REMIND: 5 minutes reminder
+      "let's meditate" -> OPEN: headspace
+      "I want to meditate" -> OPEN: headspace
+      "play lofi" -> OPEN: lofi
       "capital of France?" -> Paris is the capital.
     """
     
