@@ -87,7 +87,7 @@ func askLLMWithTools(query: String) -> String {
     </bash>
 
     To open a website or video, output ONLY: <url>key</url>
-    Valid keys are ONLY: headspace, lofi
+    Valid keys are ONLY: \(CustomURLStore.shared.systemPromptKeys)
     Do NOT use <url> for anything else — all system/terminal tasks must use <bash>.
 
     To set a reminder, output ONLY: <remind>5 minutes check the oven</remind>

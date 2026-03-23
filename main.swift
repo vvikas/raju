@@ -90,12 +90,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(itemReply)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "  📄 Show Log", action: #selector(showLog), keyEquivalent: "l"))
+        let customURLsItem = NSMenuItem(title: "  🔗 Custom URLs…", action: #selector(showCustomURLs), keyEquivalent: "")
+        customURLsItem.target = self
+        menu.addItem(customURLsItem)
         menu.addItem(itemLaunchAtLogin)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
         statusItem.menu = nil
         refreshUI()
+
+        CustomURLStore.shared.load()
 
         log("── Raju started ──────────────────────────────")
 
@@ -146,6 +151,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let attrs: [FileAttributeKey: Any] = [.posixPermissions: NSNumber(value: 0o755)]
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: cmdFile)
         NSWorkspace.shared.open(URL(fileURLWithPath: cmdFile))
+    }
+
+    @objc func showCustomURLs() {
+        CustomURLsWindowController.shared.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // ── Server toggle ──────────────────────────────────────────────────────────
