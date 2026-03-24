@@ -52,6 +52,7 @@ All inference runs on persistent local HTTP servers — models stay loaded in RA
 - **Live system queries** — CPU, RAM, disk, battery, network via a two-turn ReAct loop
 - **4 LLMs** — switch models on the fly from the menu; new model downloads in-app (~1 GB)
 - **6 Piper neural voices** — auto-downloads on first select (~60 MB each)
+- **Custom URL shortcuts** — map any phrase to a URL; right-click → 🔗 Custom URLs to manage them
 - **GPU toggle** — right-click → toggle Metal GPU acceleration on/off; auto-detected at first launch (Apple Silicon = on, Intel = off)
 - **Intel Mac support** — fully functional on Intel; GPU disabled by default to avoid Metal compatibility issues
 - **Stop / Start servers** — toggle LLM or Whisper from the menu without quitting
@@ -117,6 +118,23 @@ The 🎙️ icon appears in your menubar. Wait ~60 seconds for models to warm up
 - **File Search:** Locate the largest files on your Mac, find recently modified files, or search by filename.
 - **Productivity:** "What's in my clipboard?", "Set a timer for 10 minutes."
 - **General Knowledge:** Direct mathematical conversions or trivia answered securely offline.
+- **Custom shortcuts:** "let's meditate", "let's practice keyboard", or any phrase you define → opens the URL you set.
+
+### Custom URL shortcuts
+
+Right-click the menubar icon → **🔗 Custom URLs…** to open the settings window.
+
+| Column | What to enter |
+|--------|---------------|
+| Trigger phrase | Any word or phrase you'll say, e.g. `meditate`, `let's practice keyboard` |
+| URL | The page to open, e.g. `https://www.keybr.com` |
+| Label | What Raju says aloud, e.g. `a typing practice session` |
+
+Entries are saved to `~/.raju/custom_urls.json` and persist across restarts. The LLM is automatically told about all your trigger phrases so it knows when to use them.
+
+Default shortcuts (editable):
+- `headspace` → YouTube Headspace meditation
+- `lofi` → YouTube lo-fi music stream
 
 ---
 
@@ -249,6 +267,8 @@ GitHub Actions will then run a parallel job for the new model on every push, and
 ├── AudioRecorder.swift      ← mic input subprocess
 ├── TTSManager.swift         ← Piper speech synthesis
 ├── Models.swift             ← AI model configurations
+├── WebShortcuts.swift       ← custom URL store (load/save/match)
+├── CustomURLsWindowController.swift  ← settings window for custom URL shortcuts
 ├── install.sh               ← one-shot dependency installer
 ├── raju.log                 ← runtime log (gitignored)
 ```
